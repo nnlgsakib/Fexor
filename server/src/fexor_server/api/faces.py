@@ -192,5 +192,7 @@ async def qr_svg(member_id: uuid.UUID, space: Space = Depends(require_space(Role
         cred = await issue_credential(db, m.person_id)
         await db.commit()
     token = await token_for(db, cred)
-    svg = segno.make(token, error="m").svg_inline(scale=6, border=2)
-    return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+    # Standalone SVG (with xmlns): browsers won't render an <img> SVG without it.
+    buf = io.BytesIO()
+    segno.make(token, error="m").save(buf, kind="svg", scale=6, border=2)
+    return Response(buf.getvalue(), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})

@@ -5,6 +5,8 @@ kiosk by showing a signed QR card and their face. The kiosk checks that the face
 the card, on the device itself, and keeps working when the network is down. Admins manage everything
 from a web panel.
 
+**New here? Follow the [setup manual](docs/SETUP.md)**: one computer, a few commands, about 20 minutes.
+
 ```
 [Admin browser] --HTTPS--> [Caddy] --> [Fexor server (FastAPI)] --> [PostgreSQL]
                                              |   [worker: absences, recalculation, webhooks]

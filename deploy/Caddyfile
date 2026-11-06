@@ -1,0 +1,11 @@
+# FEXOR_TLS=<email>: public domain, Caddy gets a Let's Encrypt certificate automatically.
+# FEXOR_TLS=internal: LAN only, Caddy issues certificates from its own CA.
+# Copy that CA to each kiosk and point FEXOR_KIOSK_CA at it (see README).
+{$FEXOR_DOMAIN} {
+	tls {$FEXOR_TLS}
+	encode zstd gzip
+	request_body {
+		max_size 60MB
+	}
+	reverse_proxy server:8000
+}

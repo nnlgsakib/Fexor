@@ -1,0 +1,90 @@
+body {
+  color: #1b2320;
+}
+
+/* Tabular figures where numbers line up in columns. */
+table, .stat-value { font-variant-numeric: tabular-nums; }
+
+/* Register grid: one row per person, one stamp per day. */
+.register {
+  display: grid;
+  overflow-x: auto;
+  border: 1px solid var(--mantine-color-gray-3);
+  border-radius: 8px;
+  background: #fff;
+}
+.register table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+.register th, .register td {
+  padding: 0;
+  height: 30px;
+  text-align: center;
+  border-bottom: 1px solid var(--mantine-color-gray-2);
+}
+.register thead th {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  font-weight: 500;
+  color: var(--mantine-color-gray-7);
+  min-width: 28px;
+  z-index: 1;
+}
+.register thead th.weekend { color: var(--mantine-color-gray-5); }
+.register thead th.today { color: var(--mantine-color-ledger-7); font-weight: 700; }
+.register .who {
+  position: sticky;
+  left: 0;
+  background: #fff;
+  text-align: left;
+  padding: 0 14px;
+  min-width: 220px;
+  max-width: 260px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid var(--mantine-color-gray-3);
+  z-index: 2;
+}
+.register thead .who { z-index: 3; }
+.register .tot {
+  padding: 0 10px;
+  min-width: 44px;
+  color: var(--mantine-color-gray-7);
+  border-left: 1px solid var(--mantine-color-gray-2);
+}
+.stamp {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
+}
+.stamp.empty { background: transparent; color: var(--mantine-color-gray-4); cursor: default; }
+.stamp:focus-visible { outline: 2px solid var(--mantine-color-ledger-7); outline-offset: 2px; }
+.register tbody tr:hover td { background: var(--mantine-color-gray-0); }
+
+.stat-value {
+  font-size: 34px;
+  font-weight: 650;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

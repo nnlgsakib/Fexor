@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Attendance Kiosk</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #8b949e;
+    --accent: #3fb6a8; --ok: #2ea043; --bad: #d1453b; --warn: #d29922;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    user-select: none; -webkit-user-select: none; overflow: hidden; }
+  body { display: grid; grid-template-rows: auto 1fr auto; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px;
+    border-bottom: 1px solid var(--line); font-size: 18px; }
+  header .space { font-weight: 600; }
+  header .spacer { flex: 1; }
+  header .clock { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 99px;
+    background: var(--panel); border: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--warn); }
+  main { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 22px; padding: 16px; min-height: 0; }
+  .stage { position: relative; width: min(78vw, 62vh * 4 / 3); aspect-ratio: 4 / 3;
+    border-radius: 22px; overflow: hidden; background: #000; border: 2px solid var(--line); }
+  .stage img, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; transform: scaleX(-1); }
+  .guide { position: absolute; left: 50%; top: 47%; width: 38%; aspect-ratio: 3 / 4;
+    transform: translate(-50%, -50%); border: 3px dashed rgba(255,255,255,.35); border-radius: 50%;
+    pointer-events: none; transition: border-color .2s; }
+  .stage.face .guide { border-color: var(--accent); border-style: solid; }
+  .stage.qr .guide { border-radius: 18px; aspect-ratio: 1; width: 42%; }
+  .nocam { position: absolute; inset: 0; display: none; place-items: center; color: var(--muted);
+    font-size: 20px; }
+  .stage.nocamera .nocam { display: grid; }
+  .msg { font-size: clamp(22px, 3.4vw, 40px); font-weight: 650; text-align: center; min-height: 1.3em;
+    max-width: 90vw; }
+  .sub { color: var(--muted); font-size: 18px; text-align: center; min-height: 1.2em; }
+  .steps { display: flex; gap: 10px; }
+  .steps span { width: 46px; height: 8px; border-radius: 4px; background: var(--line); }
+  .steps span.done { background: var(--accent); }
+  .steps span.now { background: var(--warn); }
+  button { font: inherit; font-size: 24px; font-weight: 650; padding: 18px 46px; border-radius: 16px;
+    border: 0; background: var(--accent); color: #04211d; cursor: pointer; min-width: 260px; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line);
+    font-size: 18px; padding: 12px 28px; min-width: 0; }
+  button:active { transform: scale(.98); }
+  .hidden { display: none !important; }
+  .result { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.72);
+    backdrop-filter: blur(4px); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 28px;
+    padding: 40px 56px; text-align: center; display: grid; gap: 14px; justify-items: center;
+    min-width: min(560px, 90vw); border-top: 10px solid var(--ok); }
+  .card.bad { border-top-color: var(--bad); }
+  .card .icon { width: 84px; height: 84px; }
+  .card .name { font-size: 34px; font-weight: 700; }
+  .card .label { font-size: 26px; }
+  .card .time { font-size: 48px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .card .why { font-size: 22px; color: var(--muted); max-width: 520px; }
+  footer { padding: 10px 24px; color: var(--muted); font-size: 14px; display: flex; gap: 18px;
+    border-top: 1px solid var(--line); }
+  .setup { position: fixed; inset: 0; background: var(--bg); display: grid; place-items: center; }
+  .setup form { display: grid; gap: 14px; width: min(520px, 92vw); background: var(--panel);
+    padding: 32px; border-radius: 20px; border: 1px solid var(--line); }
+  .setup h1 { margin: 0 0 6px; font-size: 26px; }
+  .setup p { margin: 0; color: var(--muted); }
+  .setup input { font: inherit; font-size: 20px; padding: 14px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .setup .err { color: var(--bad); min-height: 1.2em; }
+</style>
+</head>
+<body>
+<header>
+  <span class="space" id="space">Attendance</span>
+  <span class="pill"><span class="dot" id="netdot"></span><span id="net">Connecting</span></span>
+  <span class="pill hidden" id="queue"></span>
+  <span class="spacer"></span>
+  <span class="clock" id="clock">--:--</span>
+</header>
+
+<main>
+  <div class="stage" id="stage">
+    <img id="video" alt="">
+    <canvas id="overlay"></canvas>
+    <div class="guide"></div>
+    <div class="nocam">Camera not available</div>
+  </div>
+  <div class="msg" id="msg">Starting…</div>
+  <div class="sub" id="sub"></div>
+  <div class="steps hidden" id="steps"></div>
+  <button id="start">Start verification</button>
+  <button id="cancel" class="ghost hidden">Cancel</button>
+</main>
+
+<footer><span id="foot">Your face is checked on this device and is not uploaded.</span></footer>
+
+<div class="result hidden" id="result">
+  <div class="card" id="card">
+    <svg class="icon" id="icon" viewBox="0 0 24 24" fill="none" stroke-width="2.2"
+         stroke-linecap="round" stroke-linejoin="round"></svg>
+    <div class="name" id="rname"></div>
+    <div class="label" id="rlabel"></div>
+    <div class="time" id="rtime"></div>
+    <div class="why" id="rwhy"></div>
+    <button id="review" class="ghost hidden">Ask admin to review</button>
+  </div>
+</div>
+
+<div class="setup hidden" id="setup">
+  <form id="setupForm">
+    <h1>Set up this kiosk</h1>
+    <p>In the admin panel open the space, go to Devices, add a device and enter its code here.</p>
+    <input id="surl" placeholder="Server URL, e.g. https://attendance.example.com" required>
+    <input id="scode" placeholder="Enrollment code, e.g. ABCDE-FGHJK" required autocapitalize="characters">
+    <div class="err" id="serr"></div>
+    <button type="submit">Connect</button>
+  </form>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const OK_ICON = '<circle cx="12" cy="12" r="10" stroke="#2ea043"/><path d="M7 12.5l3.2 3.2L17 9" stroke="#2ea043"/>';
+const BAD_ICON = '<circle cx="12" cy="12" r="10" stroke="#d1453b"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" stroke="#d1453b"/>';
+let ws, view = {}, lastUrl;
+
+function tick() {
+  $("clock").textContent = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+setInterval(tick, 1000); tick();
+
+function send(cmd) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({cmd})); }
+$("start").onclick = () => send("start");
+$("cancel").onclick = () => send("cancel");
+$("review").onclick = () => send("review");
+
+function drawBox(box) {
+  const c = $("overlay"), ctx = c.getContext("2d");
+  c.width = c.clientWidth; c.height = c.clientHeight;
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (!box) return;
+  // The canvas is mirrored by CSS, so raw camera coordinates line up with the mirrored video.
+  ctx.strokeStyle = "#3fb6a8"; ctx.lineWidth = 3;
+  ctx.strokeRect(box[0] * c.width, box[1] * c.height, box[2] * c.width, box[3] * c.height);
+}
+
+function render(v) {
+  view = v;
+  $("space").textContent = v.space || "Attendance";
+  $("netdot").className = "dot " + (v.online ? "on" : "off");
+  $("net").textContent = v.online ? "Online" : "Offline – saving locally";
+  $("queue").classList.toggle("hidden", !v.outbox);
+  $("queue").textContent = `${v.outbox} waiting to upload`;
+  const stage = $("stage");
+  stage.className = "stage " + (v.state === "face" ? "face" : v.state === "scan_qr" ? "qr" : "")
+    + (v.camera_ok === false ? " nocamera" : "");
+  $("msg").textContent = v.message || "";
+  let sub = "";
+  if (v.state === "face" && v.name) sub = `Verifying ${v.name}` + (v.remaining != null ? ` · ${v.remaining}s` : "");
+  if (v.state === "scan_qr" && v.remaining != null) sub = `${v.remaining}s`;
+  $("sub").textContent = sub;
+  const steps = $("steps");
+  if (v.state === "face" && v.steps) {
+    steps.classList.remove("hidden");
+    steps.innerHTML = Array.from({length: v.steps}, (_, i) =>
+      `<span class="${i + 1 < v.step ? "done" : i + 1 === v.step && v.action ? "now" : ""}"></span>`).join("");
+  } else steps.classList.add("hidden");
+  const busy = v.state === "scan_qr" || v.state === "face";
+  $("start").classList.toggle("hidden", v.state !== "idle");
+  $("cancel").classList.toggle("hidden", !busy);
+  drawBox(v.state === "face" ? v.box : null);
+
+  const res = $("result");
+  if (v.state === "result") {
+    res.classList.remove("hidden");
+    $("card").className = "card" + (v.ok ? "" : " bad");
+    $("icon").innerHTML = v.ok ? OK_ICON : BAD_ICON;
+    $("rname").textContent = v.name || "";
+    $("rlabel").textContent = v.ok ? v.message : "Not verified";
+    $("rtime").textContent = v.ok ? (v.time || "") : "";
+    $("rwhy").textContent = v.ok ? "" : v.message;
+    $("review").classList.toggle("hidden", !v.can_review);
+  } else res.classList.add("hidden");
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = "blob";
+  ws.onmessage = (e) => {
+    if (typeof e.data === "string") { render(JSON.parse(e.data)); return; }
+    const url = URL.createObjectURL(e.data);
+    $("video").src = url;
+    if (lastUrl) URL.revokeObjectURL(lastUrl);
+    lastUrl = url;
+  };
+  ws.onclose = () => { $("msg").textContent = "Reconnecting…"; setTimeout(connect, 1500); };
+}
+
+async function boot() {
+  const s = await (await fetch("/api/status")).json();
+  if (!s.enrolled) { $("setup").classList.remove("hidden"); return; }
+  connect();
+}
+
+$("setupForm").onsubmit = async (e) => {
+  e.preventDefault();
+  $("serr").textContent = "";
+  const r = await fetch("/api/setup", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({server_url: $("surl").value.trim(), code: $("scode").value.trim()})});
+  const body = await r.json();
+  if (!r.ok) { $("serr").textContent = body.detail || "Setup failed"; return; }
+  $("setup").classList.add("hidden");
+  connect();
+};
+
+boot();
+</script>
+</body>
+</html>

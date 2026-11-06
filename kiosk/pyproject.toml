@@ -1,0 +1,18 @@
+[project]
+name = "fexor-kiosk"
+version = "0.1.0"
+description = "Fexor edge kiosk: camera, on-device verification, offline queue, sync"
+requires-python = ">=3.12"
+dependencies = [
+    "fexor-core",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+fexor-kiosk = "fexor_kiosk.main:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"

@@ -1,0 +1,29 @@
+[project]
+name = "fexor-server"
+version = "0.1.0"
+description = "Fexor central server: admin API, sync API, rules engine, worker"
+requires-python = ">=3.12"
+dependencies = [
+    "fexor-core",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic-settings>=2.6",
+    "argon2-cffi>=23.1",
+    "pyotp>=2.9",
+    "openpyxl>=3.1",
+    "holidays>=0.60",
+    "python-multipart>=0.0.18",
+    "segno>=1.6",
+    "httpx>=0.28",
+    "tzdata>=2026.6",
+]
+
+[project.scripts]
+fexor-server = "fexor_server.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"

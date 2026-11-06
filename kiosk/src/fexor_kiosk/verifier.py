@@ -270,6 +270,7 @@ class Verifier:
             return
         n = int(self._space("challenge_actions", 2))
         s.challenge = Challenge(random_actions(n))
+        s.started = now  # face step gets its own full time budget, however long the QR took
         self.state = "face"
         self.view = {"state": "face", "name": member.name, "message": "Look straight at the camera"}
 

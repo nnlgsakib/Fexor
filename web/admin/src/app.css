@@ -2,8 +2,8 @@ body {
   color: #1b2320;
 }
 
-/* Tabular figures where numbers line up in columns. */
-table, .stat-value { font-variant-numeric: tabular-nums; }
+/* Tabular figures for big numbers only: in this font they also widen ":" and ",". */
+.stat-value { font-variant-numeric: tabular-nums; }
 
 /* Register grid: one row per person, one stamp per day. */
 .register {

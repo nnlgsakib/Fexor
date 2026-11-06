@@ -1,5 +1,6 @@
 import { BarChart } from "@mantine/charts";
-import { Anchor, Badge, Group, Paper, SimpleGrid, Stack, Table, Text, Title } from "@mantine/core";
+import { Anchor, Badge, Button, Group, Paper, SimpleGrid, Stack, Table, Text, ThemeIcon, Title } from "@mantine/core";
+import { IconCheck } from "@tabler/icons-react";
 import { DateInput } from "@mantine/dates";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
@@ -23,6 +24,48 @@ interface Dashboard {
   failure_reasons: Record<string, number>;
   recent: AttendanceEvent[];
   devices: { total: number; online: number; clock_drift: string[] };
+  setup: { members: number; members_without_face: number; shifts: number; kiosks_ready: number; has_checkins: boolean };
+}
+
+function Checklist({ d, spaceId }: { d: Dashboard; spaceId: string }) {
+  const s = d.setup;
+  const items = [
+    { done: s.members > 0, title: "Add people", text: "Add them one by one or import a spreadsheet.", to: "people", action: "Open People" },
+    { done: s.members > 0 && s.members_without_face === 0, title: "Add a face photo for everyone",
+      text: s.members_without_face ? `${s.members_without_face} still need a photo. Then print their QR cards from People.` : "Then print their QR cards from People.",
+      to: "people", action: "Add photos" },
+    { done: s.shifts > 0, title: "Set working hours", text: "Needed to mark people late or absent.", to: "schedule", action: "Open schedule" },
+    { done: s.kiosks_ready > 0, title: "Set up a kiosk", text: "Install the kiosk app, then pair it by showing a QR code to its camera.", to: "devices", action: "Add kiosk" },
+    { done: s.has_checkins, title: "Do a test check-in", text: "Show a QR card at the kiosk and follow the instructions on screen.", to: "", action: "" },
+  ];
+  if (items.every((i) => i.done)) return null;
+  const done = items.filter((i) => i.done).length;
+  return (
+    <Paper withBorder p="lg">
+      <Group justify="space-between" mb="sm">
+        <Title order={4}>Get this space ready</Title>
+        <Text size="sm" c="dimmed">{done} of {items.length} done</Text>
+      </Group>
+      <Stack gap="xs">
+        {items.map((i, n) => (
+          <Group key={i.title} justify="space-between" wrap="nowrap" opacity={i.done ? 0.6 : 1}>
+            <Group gap="sm" wrap="nowrap" align="flex-start">
+              <ThemeIcon radius="xl" size={26} color={i.done ? "ledger" : "gray"} variant={i.done ? "filled" : "light"}>
+                {i.done ? <IconCheck size={16} /> : <Text size="sm" fw={600}>{n + 1}</Text>}
+              </ThemeIcon>
+              <div>
+                <Text fw={600} td={i.done ? "line-through" : undefined}>{i.title}</Text>
+                {!i.done && <Text size="sm" c="dimmed">{i.text}</Text>}
+              </div>
+            </Group>
+            {!i.done && i.to !== "" && (
+              <Button size="xs" variant="default" component={Link} to={`/spaces/${spaceId}/${i.to}`}>{i.action}</Button>
+            )}
+          </Group>
+        ))}
+      </Stack>
+    </Paper>
+  );
 }
 
 function Stat({ label, value, color, hint }: { label: string; value: number | string; color?: string; hint?: string }) {
@@ -57,6 +100,7 @@ export function Overview() {
       />
       {d && (
         <Stack gap="lg">
+          <Checklist d={d} spaceId={spaceId} />
           <SimpleGrid cols={{ base: 2, sm: 3, lg: 6 }}>
             <Stat label="Present" value={d.present} color={STATUS.present.color} hint={`of ${d.members} people`} />
             <Stat label="Late" value={d.counts.late ?? 0} color={STATUS.late.color} />

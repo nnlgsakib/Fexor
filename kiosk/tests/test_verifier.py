@@ -45,6 +45,14 @@ def roster(**space):
     }
 
 
+def paired_store(path, data=None, etag=None):
+    store = Store(path)
+    store.set("token", "fxd_test", sealed=True)
+    store.set("device_id", "dev-1")
+    store.save_roster(data or roster(), etag)
+    return store
+
+
 def face(x=200.0):
     raw = np.zeros(15, np.float32)
     return Face(raw=raw, box=(x, 120.0, 200.0, 240.0), landmarks=np.zeros((5, 2)), score=0.9)
@@ -91,8 +99,7 @@ class FakePipe:
 
 @pytest.fixture
 def kiosk(tmp_path):
-    store = Store(tmp_path)
-    store.save_roster(roster(), '"e1"')
+    store = paired_store(tmp_path, etag='"e1"')
     pipe = FakePipe()
     v = Verifier(store, pipe)
     pipe.verifier = v
@@ -245,8 +252,7 @@ def test_review_request_creates_pending_event(kiosk):
 
 
 def test_single_mode_and_no_challenge(tmp_path):
-    store = Store(tmp_path)
-    store.save_roster(roster(mode="single", challenge_actions=0), None)
+    store = paired_store(tmp_path, roster(mode="single", challenge_actions=0))
     pipe = FakePipe()
     v = Verifier(store, pipe)
     pipe.verifier = v
@@ -294,8 +300,7 @@ def test_real_models_qr_then_printed_photo_is_rejected(tmp_path, real_pipe):
     emb = enroll_from_image(FaceEngine(), photo).embedding
     data = roster()
     data["members"][0]["templates"] = [b64(emb)]
-    store = Store(tmp_path)
-    store.save_roster(data, None)
+    store = paired_store(tmp_path, data)
     v = Verifier(store, real_pipe)
 
     buf = io.BytesIO()
@@ -333,6 +338,10 @@ def _qr_png(text: str) -> bytes:
 
 class _NoCamera:
     ok = False
+    source = 0
+
+    def set_source(self, src):
+        self.source = src
 
     def start(self):
         return self
@@ -349,8 +358,7 @@ def _dev_client(tmp_path, monkeypatch, env: str):
     from fexor_kiosk.app import create_app
 
     monkeypatch.setenv("FEXOR_ENV", env)
-    store = Store(tmp_path)
-    store.save_roster(roster(), None)
+    store = paired_store(tmp_path)
     pipe = FakePipe()
     app = create_app(store, _NoCamera(), pipeline=pipe)
     pipe.verifier = app.state.verifier
@@ -394,3 +402,80 @@ def test_dev_qr_upload_absent_outside_dev(tmp_path, monkeypatch):
     client, _, _ = _dev_client(tmp_path, monkeypatch, "production")
     assert client.get("/api/status").json()["dev"] is False
     assert client.post("/api/dev/qr", content=_qr_png(token())).status_code in (404, 405)
+
+
+def test_http_only_for_local_network_servers():
+    from fexor_kiosk.sync import http_allowed, normalize_url, parse_pairing
+
+    for ok in ["http://192.168.1.20", "http://10.0.0.5:8000", "http://localhost:8000",
+               "http://attendance-pc", "http://office.local", "http://127.0.0.1"]:
+        assert http_allowed(ok), ok
+    for bad in ["http://attendance.example.com", "http://8.8.8.8"]:
+        assert not http_allowed(bad), bad
+    assert normalize_url("192.168.1.20/") == "http://192.168.1.20"
+    assert normalize_url("attendance.example.com") == "https://attendance.example.com"
+    assert parse_pairing('FXP1:{"u":"http://192.168.1.20","c":"ABCDE-FGHJK"}') == (
+        "http://192.168.1.20", "ABCDE-FGHJK")
+    with pytest.raises(ValueError):
+        parse_pairing("FXP1:{broken")
+
+
+async def test_enroll_refuses_plain_http_to_internet_host(tmp_path):
+    from fexor_kiosk.sync import enroll
+
+    with pytest.raises(ValueError, match="not using https"):
+        await enroll(Store(tmp_path), "http://attendance.example.com", "ABCDE-FGHJK")
+
+
+def test_unpaired_kiosk_looks_for_pairing_qr(tmp_path):
+    pipe = FakePipe()
+    v = Verifier(Store(tmp_path), pipe)
+    seen = []
+    v.on_pairing = seen.append
+    pipe.qr_text = token()  # an attendance QR is ignored while unpaired
+    for i in range(6):
+        v.step(FRAME, float(i))
+    assert v.view["state"] == "setup" and seen == []
+    pipe.qr_text = 'FXP1:{"u":"http://192.168.1.20","c":"X"}'
+    for i in range(6):
+        v.step(FRAME, float(i))
+    assert seen and seen[0].startswith("FXP1:")
+
+
+def test_settings_qr_unlocks_only_this_kiosk(kiosk):
+    v, pipe, store = kiosk
+    t = 1_000_000.0
+    pipe.qr_text = qr.sign_settings(KEY, "k1", "other-device", int(t) + 600)
+    v.command("start")
+    v.step(FRAME, t)
+    assert not v.settings_open(t) and "different kiosk" in v.view["message"]
+    v.step(FRAME, t + 10)  # result expires
+    pipe.qr_text = qr.sign_settings(KEY, "k1", "dev-1", int(t) - 1)
+    v.command("start")
+    v.step(FRAME, t + 10)
+    assert not v.settings_open(t + 10) and "expired" in v.view["message"]
+    v.step(FRAME, t + 20)
+    pipe.qr_text = qr.sign_settings(KEY, "k1", "dev-1", int(t) + 600)
+    v.command("start")
+    v.step(FRAME, t + 20)
+    assert v.settings_open(t + 21) and v.view["state"] == "settings"
+    assert not store.pending()  # opening settings is not an attendance event
+    v.command("close_settings")
+    v.step(FRAME, t + 30)
+    assert not v.settings_open(t + 30) and v.view["state"] == "idle"
+
+
+def test_kiosk_settings_api_locked_until_settings_qr(tmp_path, monkeypatch):
+    client, v, store = _dev_client(tmp_path, monkeypatch, "production")
+    assert client.post("/api/camera", json={"source": "1"}).status_code == 403
+    assert client.post("/api/settings/repair").status_code == 403
+    v.settings_until = v.clock() + 600
+    assert client.post("/api/camera", json={"source": "1"}).status_code == 200
+    assert store.get("camera") == "1"
+    assert client.post("/api/camera", json={"source": "ftp://x"}).status_code == 400
+    store.enqueue({"id": "e1"})
+    r = client.post("/api/settings/repair")
+    assert r.status_code == 200 and r.json()["dropped"] == 1
+    assert not store.has("token") and store.get("camera") == "1"  # camera choice survives
+    # Unpaired kiosks are open for setup.
+    assert client.get("/api/status").json()["settings_open"] is True

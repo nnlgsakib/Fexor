@@ -31,7 +31,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("fexor:logout", onLogout);
   }, [qc]);
 
-  if (q.isLoading) return null;
+  const setup = useQuery({
+    queryKey: ["setup-status"],
+    queryFn: () => api<{ needs_setup: boolean; code_required: boolean }>("/setup/status"),
+    enabled: !q.isLoading && !q.data,
+    retry: false,
+  });
+
+  if (q.isLoading || (!q.data && setup.isLoading)) return null;
+  if (!q.data && setup.data?.needs_setup) {
+    return <FirstRun codeRequired={setup.data.code_required} onDone={() => { qc.clear(); q.refetch(); }} />;
+  }
   if (!q.data) return <Login onDone={() => { qc.clear(); q.refetch(); }} />;
 
   const logout = async () => {
@@ -40,6 +50,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     qc.setQueryData(["me"], null);
   };
   return <AuthContext.Provider value={{ me: q.data, refresh: () => q.refetch(), logout }}>{children}</AuthContext.Provider>;
+}
+
+function FirstRun({ codeRequired, onDone }: { codeRequired: boolean; onDone: () => void }) {
+  const fromUrl = new URLSearchParams(window.location.search).get("setup") ?? "";
+  const [form, setForm] = useState({ name: "", email: "", password: "", confirm: "", code: fromUrl });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.currentTarget.value });
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (form.password !== form.confirm) { setError("The two passwords are different."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      await api("/setup", { json: { name: form.name, email: form.email, password: form.password, code: form.code } });
+      window.history.replaceState(null, "", "/");
+      onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not reach the server");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Box mih="100vh" display="grid" style={{ placeItems: "center", background: "var(--mantine-color-gray-0)" }} p="md">
+      <Paper withBorder p="xl" w={460} maw="100%">
+        <form onSubmit={submit}>
+          <Stack>
+            <div>
+              <Title order={2} fz={24}>Welcome to Fexor</Title>
+              <Text c="dimmed" size="sm">Create the main admin account. You can add more admins later.</Text>
+            </div>
+            {error && <Alert color="red" variant="light">{error}</Alert>}
+            <TextInput label="Your name" required value={form.name} onChange={set("name")} autoFocus />
+            <TextInput label="Email" type="email" autoComplete="username" required value={form.email} onChange={set("email")} />
+            <PasswordInput label="Password" description="At least 10 characters" autoComplete="new-password" required
+              value={form.password} onChange={set("password")} />
+            <PasswordInput label="Repeat password" autoComplete="new-password" required value={form.confirm} onChange={set("confirm")} />
+            {codeRequired && (
+              <TextInput label="Setup code" description="Shown in the window where you started the server."
+                required value={form.code} onChange={set("code")} />
+            )}
+            <Button type="submit" loading={busy} fullWidth disabled={form.password.length < 10}>Create account</Button>
+          </Stack>
+        </form>
+      </Paper>
+    </Box>
+  );
 }
 
 function Login({ onDone }: { onDone: () => void }) {

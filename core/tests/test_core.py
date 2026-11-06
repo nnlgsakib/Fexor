@@ -147,3 +147,20 @@ def test_pipeline_on_sample_face(engines):
     met = mesh.metrics(img, face)
     assert met.presence > 0.9 and 0.15 < met.ear < 0.6
     assert enroll_from_image(eng, np.zeros((300, 300, 3), np.uint8)).error == "no_face"
+
+
+def test_settings_token_scoped_to_device_and_time():
+    key = Ed25519PrivateKey.generate()
+    pubs = {"k1": key.public_key()}
+    tok = qr.sign_settings(key, "k1", "dev-1", 1_000)
+    qr.verify_settings(tok, pubs, "dev-1", 999)
+    with pytest.raises(qr.InvalidToken, match="other_device"):
+        qr.verify_settings(tok, pubs, "dev-2", 999)
+    with pytest.raises(qr.InvalidToken, match="expired"):
+        qr.verify_settings(tok, pubs, "dev-1", 1_001)
+    # A person QR is never accepted as a settings QR, and vice versa.
+    person = qr.sign(key, "k1", "p", "j")
+    with pytest.raises(qr.InvalidToken):
+        qr.verify_settings(person, pubs, "dev-1", 0)
+    with pytest.raises(qr.InvalidToken):
+        qr.verify(tok, pubs)

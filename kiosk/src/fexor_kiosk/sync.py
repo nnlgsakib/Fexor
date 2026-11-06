@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import json
 import logging
 import os
 import platform
 import time
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -23,17 +26,55 @@ def _verify() -> str | bool:
     return os.environ.get("FEXOR_KIOSK_CA") or True
 
 
+PAIR_PREFIX = "FXP1:"
+
+
+def http_allowed(url: str) -> bool:
+    """Plain http only for servers on the local network (office mode) or when forced."""
+    if os.environ.get("FEXOR_KIOSK_ALLOW_HTTP"):
+        return True
+    host = (urlparse(url).hostname or "").lower()
+    if host == "localhost" or "." not in host or host.endswith((".local", ".lan", ".home.arpa")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback
+
+
+def normalize_url(url: str) -> str:
+    url = url.strip().rstrip("/")
+    if "://" not in url:
+        url = ("http://" if http_allowed("http://" + url) else "https://") + url
+    p = urlparse(url)
+    if p.scheme not in ("http", "https") or not p.hostname:
+        raise ValueError("enter the server address, e.g. https://attendance.example.com")
+    return url
+
+
+def parse_pairing(text: str) -> tuple[str, str]:
+    """Pairing QR from the admin panel: FXP1:{"u": server url, "c": setup code}."""
+    if not text.startswith(PAIR_PREFIX) or len(text) > 400:
+        raise ValueError("not a pairing code")
+    try:
+        data = json.loads(text[len(PAIR_PREFIX):])
+        return normalize_url(str(data["u"])), str(data["c"])
+    except (ValueError, KeyError, TypeError) as e:
+        raise ValueError("this pairing QR is damaged; show a new one") from e
+
+
 async def enroll(store: Store, server_url: str, code: str) -> dict[str, Any]:
-    server_url = server_url.rstrip("/")
-    if not server_url.startswith("https://") and not os.environ.get("FEXOR_KIOSK_ALLOW_HTTP"):
-        raise ValueError("server URL must start with https:// (add --allow-http "
-                         "for local testing only)")
+    server_url = normalize_url(server_url)
+    if server_url.startswith("http://") and not http_allowed(server_url):
+        raise ValueError("this server is on the internet but not using https://, which is not "
+                         "safe. Ask your admin to turn on HTTPS.")
     async with httpx.AsyncClient(base_url=server_url, timeout=20, verify=_verify()) as c:
         r = await c.post("/api/device/enroll", json={"code": code, "info": device_info(store)})
     if r.status_code != 200:
         detail = r.json().get("detail") if r.headers.get("content-type", "").startswith(
             "application/json") else r.text
-        raise ValueError(f"enrollment failed: {detail}")
+        raise ValueError(f"setup failed: {detail}")
     data = r.json()
     store.reset()
     store.set("server_url", server_url)

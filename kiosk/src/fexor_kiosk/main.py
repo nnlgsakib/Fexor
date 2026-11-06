@@ -57,8 +57,8 @@ def main() -> None:
     p.add_argument("--data-dir")
     sub = p.add_subparsers(dest="cmd", required=True)
     run = sub.add_parser("run", help="start the kiosk")
-    run.add_argument("--camera", default=os.environ.get("FEXOR_KIOSK_CAMERA", "0"),
-                     help="camera index or stream URL")
+    run.add_argument("--camera", default=os.environ.get("FEXOR_KIOSK_CAMERA"),
+                     help="camera index or stream URL (default: the one chosen on the kiosk screen)")
     run.add_argument("--port", type=int, default=8300)
     run.add_argument("--width", type=int, default=640)
     run.add_argument("--height", type=int, default=480)
@@ -113,7 +113,10 @@ def main() -> None:
         from .camera import Camera
 
         ensure_all()
-        app = create_app(store, Camera(a.camera, a.width, a.height))
+        source = a.camera or store.get("camera") or "0"
+        if a.camera:
+            store.set("camera", a.camera)
+        app = create_app(store, Camera(source, a.width, a.height))
         print(f"Kiosk UI: http://127.0.0.1:{a.port}/")
         uvicorn.run(app, host="127.0.0.1", port=a.port, log_level="warning")
 

@@ -12,9 +12,43 @@ import numpy as np
 log = logging.getLogger("fexor.camera")
 
 
+def parse_source(source: str | int) -> str | int:
+    """Camera index ("0") or stream URL (e.g. DroidCam: http://192.168.1.5:4747/video)."""
+    s = str(source).strip()
+    return int(s) if s.isdigit() else s
+
+
+def open_capture(source: str | int) -> cv2.VideoCapture:
+    if isinstance(source, str):  # network stream: fail in seconds, not half a minute
+        return cv2.VideoCapture(source, cv2.CAP_FFMPEG, [
+            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000])
+    return cv2.VideoCapture(source)
+
+
+def snapshot(source: str | int, width: int = 240) -> bytes | None:
+    """Open a camera briefly and return a small JPEG, or None if it gives no picture."""
+    cap = open_capture(parse_source(source))
+    try:
+        if not cap.isOpened():
+            return None
+        frame = None
+        for _ in range(8):  # many cameras return dark frames while warming up
+            ok, f = cap.read()
+            if ok:
+                frame = f
+        if frame is None:
+            return None
+        frame = cv2.resize(frame, (width, int(width * frame.shape[0] / frame.shape[1])))
+        ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        return jpg.tobytes() if ok else None
+    finally:
+        cap.release()
+
+
 class Camera:
     def __init__(self, source: str | int, width: int = 640, height: int = 480):
-        self.source = int(source) if isinstance(source, str) and source.isdigit() else source
+        self.source = parse_source(source)
+        self._reopen = threading.Event()
         self.width, self.height = width, height
         self._frame: np.ndarray | None = None
         self._seq = 0
@@ -30,8 +64,14 @@ class Camera:
     def stop(self) -> None:
         self._stop.set()
 
+    def set_source(self, source: str | int) -> None:
+        """Switch camera without restarting the kiosk."""
+        self.source = parse_source(source)
+        self.ok = False
+        self._reopen.set()
+
     def _open(self) -> cv2.VideoCapture:
-        cap = cv2.VideoCapture(self.source)
+        cap = open_capture(self.source)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -40,6 +80,10 @@ class Camera:
     def _run(self) -> None:
         cap = None
         while not self._stop.is_set():
+            if self._reopen.is_set() and cap is not None:
+                cap.release()
+                cap = None
+            self._reopen.clear()
             if cap is None or not cap.isOpened():
                 cap = self._open()
                 if not cap.isOpened():

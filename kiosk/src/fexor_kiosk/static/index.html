@@ -21,12 +21,13 @@
   header .clock { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; }
   .pill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 99px;
     background: var(--panel); border: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+  .pill.dev { color: var(--warn); border-color: var(--warn); }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
   .dot.on { background: var(--ok); } .dot.off { background: var(--warn); }
-  main { display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 22px; padding: 16px; min-height: 0; }
-  .stage { position: relative; width: min(78vw, 62vh * 4 / 3); aspect-ratio: 4 / 3;
-    border-radius: 22px; overflow: hidden; background: #000; border: 2px solid var(--line); }
+  main { display: flex; flex-direction: column; align-items: center; justify-content: safe center;
+    gap: 18px; padding: 16px; min-height: 0; overflow-y: auto; }
+  .stage { position: relative; width: min(78vw, 56vh * 4 / 3); aspect-ratio: 4 / 3;
+    border-radius: 22px; overflow: hidden; background: #000; border: 2px solid var(--line); flex: none; }
   .stage img, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%;
     object-fit: cover; transform: scaleX(-1); }
   .guide { position: absolute; left: 50%; top: 47%; width: 38%; aspect-ratio: 3 / 4;
@@ -35,7 +36,7 @@
   .stage.face .guide { border-color: var(--accent); border-style: solid; }
   .stage.qr .guide { border-radius: 18px; aspect-ratio: 1; width: 42%; }
   .nocam { position: absolute; inset: 0; display: none; place-items: center; color: var(--muted);
-    font-size: 20px; }
+    font-size: 20px; text-align: center; padding: 20px; }
   .stage.nocamera .nocam { display: grid; }
   .msg { font-size: clamp(22px, 3.4vw, 40px); font-weight: 650; text-align: center; min-height: 1.3em;
     max-width: 90vw; }
@@ -48,12 +49,48 @@
     border: 0; background: var(--accent); color: #04211d; cursor: pointer; min-width: 260px; }
   button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line);
     font-size: 18px; padding: 12px 28px; min-width: 0; }
+  button.small { font-size: 16px; padding: 10px 18px; min-width: 0; border-radius: 10px; }
+  button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
   button:active { transform: scale(.98); }
+  button:disabled { opacity: .5; cursor: default; }
   .upload { font-size: 16px; color: var(--warn); border: 1px dashed var(--warn); border-radius: 12px;
     padding: 10px 22px; cursor: pointer; }
   .uperr { color: var(--bad); font-size: 16px; min-height: 1.2em; }
-  .pill.dev { color: var(--warn); border-color: var(--warn); }
   .hidden { display: none !important; }
+
+  /* Setup and settings: preview on the left, steps on the right. */
+  body.manage main { flex-direction: row; align-items: flex-start; justify-content: center; gap: 28px;
+    overflow-y: auto; }
+  body.manage .stage { width: min(46vw, 64vh * 4 / 3); position: sticky; top: 0; }
+  body.manage .verify { display: none !important; }
+  .panel { width: min(560px, 92vw); display: grid; gap: 18px; user-select: text; }
+  .panel h1 { margin: 0; font-size: 30px; }
+  .panel h2 { margin: 0 0 4px; font-size: 20px; display: flex; gap: 10px; align-items: center; }
+  .panel h2 .n { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent); color: #04211d; font-size: 16px; }
+  .panel p { margin: 0; color: var(--muted); line-height: 1.45; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px;
+    display: grid; gap: 12px; }
+  .cams { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .cam { background: #000; border: 2px solid var(--line); border-radius: 10px; padding: 0; min-width: 0;
+    display: grid; overflow: hidden; color: var(--muted); font-size: 14px; font-weight: 500; }
+  .cam img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; transform: scaleX(-1); }
+  .cam .ph { aspect-ratio: 4 / 3; display: grid; place-items: center; }
+  .cam span { padding: 6px; background: var(--panel); }
+  .cam.on { border-color: var(--accent); color: var(--text); }
+  .row { display: flex; gap: 10px; }
+  .row input { flex: 1; }
+  input { font: inherit; font-size: 17px; padding: 12px; border-radius: 10px; min-width: 0;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .status { font-size: 17px; min-height: 1.3em; }
+  .status.error { color: var(--bad); } .status.done { color: var(--ok); }
+  .status.connecting { color: var(--warn); }
+  details summary { cursor: pointer; color: var(--muted); }
+  details[open] summary { margin-bottom: 12px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; font-size: 16px; }
+  dt { color: var(--muted); } dd { margin: 0; word-break: break-all; }
+  .warnline { color: var(--warn); font-size: 15px; }
+
   .result { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.72);
     backdrop-filter: blur(4px); }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 28px;
@@ -67,20 +104,16 @@
   .card .why { font-size: 22px; color: var(--muted); max-width: 520px; }
   footer { padding: 10px 24px; color: var(--muted); font-size: 14px; display: flex; gap: 18px;
     border-top: 1px solid var(--line); }
-  .setup { position: fixed; inset: 0; background: var(--bg); display: grid; place-items: center; }
-  .setup form { display: grid; gap: 14px; width: min(520px, 92vw); background: var(--panel);
-    padding: 32px; border-radius: 20px; border: 1px solid var(--line); }
-  .setup h1 { margin: 0 0 6px; font-size: 26px; }
-  .setup p { margin: 0; color: var(--muted); }
-  .setup input { font: inherit; font-size: 20px; padding: 14px; border-radius: 10px;
-    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
-  .setup .err { color: var(--bad); min-height: 1.2em; }
+  @media (max-width: 900px) {
+    body.manage main { flex-direction: column; align-items: center; }
+    body.manage .stage { position: static; width: 92vw; }
+  }
 </style>
 </head>
 <body>
 <header>
   <span class="space" id="space">Attendance</span>
-  <span class="pill"><span class="dot" id="netdot"></span><span id="net">Connecting</span></span>
+  <span class="pill" id="netpill"><span class="dot" id="netdot"></span><span id="net">Connecting</span></span>
   <span class="pill hidden" id="queue"></span>
   <span class="pill dev hidden" id="devpill">Test mode</span>
   <span class="spacer"></span>
@@ -91,18 +124,84 @@
   <div class="stage" id="stage">
     <img id="video" alt="">
     <canvas id="overlay"></canvas>
-    <div class="guide"></div>
-    <div class="nocam">Camera not available</div>
+    <div class="guide verify"></div>
+    <div class="nocam">No picture from the camera.<br>Choose another camera in the settings.</div>
   </div>
-  <div class="msg" id="msg">Starting…</div>
-  <div class="sub" id="sub"></div>
-  <div class="steps hidden" id="steps"></div>
-  <button id="start">Start verification</button>
-  <button id="cancel" class="ghost hidden">Cancel</button>
-  <label class="upload hidden" id="qrup">Test: upload a QR image instead of scanning
+
+  <div class="msg verify" id="msg">Starting…</div>
+  <div class="sub verify" id="sub"></div>
+  <div class="steps verify hidden" id="steps"></div>
+  <button id="start" class="verify">Start verification</button>
+  <button id="cancel" class="ghost verify hidden">Cancel</button>
+  <label class="upload verify hidden" id="qrup">Test: upload a QR image instead of scanning
     <input type="file" id="qrfile" accept="image/png,image/jpeg,image/webp" hidden>
   </label>
-  <div class="uperr" id="uperr"></div>
+  <div class="uperr verify" id="uperr"></div>
+
+  <!-- First-time setup -->
+  <section class="panel hidden" id="setupPanel">
+    <h1>Set up this kiosk</h1>
+    <div class="box">
+      <h2><span class="n">1</span>Choose the camera</h2>
+      <p>Pick the picture that shows the person standing at the kiosk.</p>
+      <div class="cams" id="camsSetup"></div>
+      <details>
+        <summary>Use a phone or network camera</summary>
+        <p>In the DroidCam app (or similar), find the Wi-Fi address and type it here, for example
+          <b>http://192.168.1.5:4747/video</b>.</p>
+        <div class="row" style="margin-top:10px">
+          <input id="camUrlSetup" placeholder="http://192.168.1.5:4747/video">
+          <button class="small" data-use-url="camUrlSetup">Use</button>
+        </div>
+      </details>
+      <div class="status" id="camStatusSetup"></div>
+    </div>
+    <div class="box">
+      <h2><span class="n">2</span>Connect to your server</h2>
+      <p>On a computer, open the admin panel, go to <b>Kiosks</b> and click <b>Add kiosk</b>.
+        Hold the QR code it shows in front of this camera.</p>
+      <div class="status" id="pairStatus">Looking for the QR code…</div>
+      <details>
+        <summary>Type the code instead</summary>
+        <form id="setupForm" style="display:grid; gap:10px">
+          <input id="surl" placeholder="Server address, e.g. http://192.168.1.20" required>
+          <input id="scode" placeholder="Code, e.g. ABCDE-FGHJK" required autocapitalize="characters">
+          <button type="submit" class="small">Connect</button>
+        </form>
+      </details>
+    </div>
+  </section>
+
+  <!-- Settings, opened with an admin settings QR -->
+  <section class="panel hidden" id="settingsPanel">
+    <h1>Kiosk settings</h1>
+    <p id="settingsTimer"></p>
+    <div class="box">
+      <h2>Connection</h2>
+      <dl>
+        <dt>Space</dt><dd id="sSpace"></dd>
+        <dt>Kiosk</dt><dd id="sDevice"></dd>
+        <dt>Server</dt><dd id="sServer"></dd>
+        <dt>Status</dt><dd id="sOnline"></dd>
+      </dl>
+      <div class="warnline hidden" id="sHttp">This connection is not encrypted. Use it only on a trusted office network.</div>
+    </div>
+    <div class="box">
+      <h2>Camera</h2>
+      <div class="cams" id="camsSettings"></div>
+      <div class="row">
+        <input id="camUrlSettings" placeholder="Phone or network camera, e.g. http://192.168.1.5:4747/video">
+        <button class="small" data-use-url="camUrlSettings">Use</button>
+      </div>
+      <div class="status" id="camStatusSettings"></div>
+    </div>
+    <div class="box">
+      <h2>Pair with a different space</h2>
+      <p>Disconnects this kiosk from its server so you can set it up again.</p>
+      <div><button class="small danger" id="repair">Disconnect this kiosk</button></div>
+    </div>
+    <div><button id="closeSettings">Close settings</button></div>
+  </section>
 </main>
 
 <footer><span id="foot">Your face is checked on this device and is not uploaded.</span></footer>
@@ -119,22 +218,12 @@
   </div>
 </div>
 
-<div class="setup hidden" id="setup">
-  <form id="setupForm">
-    <h1>Set up this kiosk</h1>
-    <p>In the admin panel open the space, go to Devices, add a device and enter its code here.</p>
-    <input id="surl" placeholder="Server URL, e.g. https://attendance.example.com" required>
-    <input id="scode" placeholder="Enrollment code, e.g. ABCDE-FGHJK" required autocapitalize="characters">
-    <div class="err" id="serr"></div>
-    <button type="submit">Connect</button>
-  </form>
-</div>
-
 <script>
 const $ = (id) => document.getElementById(id);
 const OK_ICON = '<circle cx="12" cy="12" r="10" stroke="#2ea043"/><path d="M7 12.5l3.2 3.2L17 9" stroke="#2ea043"/>';
 const BAD_ICON = '<circle cx="12" cy="12" r="10" stroke="#d1453b"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" stroke="#d1453b"/>';
-let ws, view = {}, lastUrl, dev = false;
+const CAMERA_SLOTS = 6;
+let ws, view = {}, lastUrl, dev = false, manageMode = "";
 
 function tick() {
   $("clock").textContent = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
@@ -145,6 +234,15 @@ function send(cmd) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({cmd}
 $("start").onclick = () => send("start");
 $("cancel").onclick = () => send("cancel");
 $("review").onclick = () => send("review");
+$("closeSettings").onclick = () => send("close_settings");
+
+async function post(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+    body: body === undefined ? undefined : JSON.stringify(body)});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || "Something went wrong");
+  return data;
+}
 
 function drawBox(box) {
   const c = $("overlay"), ctx = c.getContext("2d");
@@ -156,9 +254,106 @@ function drawBox(box) {
   ctx.strokeRect(box[0] * c.width, box[1] * c.height, box[2] * c.width, box[3] * c.height);
 }
 
+// ---------- camera chooser (setup and settings) ----------
+async function loadCameras(gridId, statusId) {
+  const grid = $(gridId);
+  grid.innerHTML = "";
+  const cells = [];
+  for (let i = 0; i < CAMERA_SLOTS; i++) {
+    const b = document.createElement("button");
+    b.className = "cam" + (String(i) === view.camera ? " on" : "");
+    b.innerHTML = `<div class="ph">Checking…</div><span>Camera ${i + 1}</span>`;
+    b.onclick = () => chooseCamera(String(i), statusId);
+    b.dataset.src = String(i);
+    grid.appendChild(b);
+    cells.push(b);
+  }
+  // Two at a time: opening many cameras at once can stall some drivers.
+  let next = 0;
+  async function worker() {
+    while (next < cells.length) {
+      const i = next++;
+      try {
+        const r = await fetch(`/api/cameras/${i}/snapshot`);
+        if (!r.ok) throw 0;
+        const url = URL.createObjectURL(await r.blob());
+        cells[i].querySelector(".ph").outerHTML = `<img src="${url}" alt="Camera ${i + 1}">`;
+      } catch { cells[i].remove(); }
+    }
+    if (!grid.children.length) grid.innerHTML = "<p>No cameras found. Plug in a USB camera, or use a phone camera below.</p>";
+  }
+  worker(); worker();
+}
+
+function markCamera() {
+  document.querySelectorAll(".cam").forEach((b) => b.classList.toggle("on", b.dataset.src === view.camera));
+}
+
+async function chooseCamera(src, statusId) {
+  const st = $(statusId);
+  st.className = "status connecting"; st.textContent = "Switching camera…";
+  try {
+    await post("/api/camera", {source: src});
+    st.className = "status done"; st.textContent = "Camera saved.";
+  } catch (e) { st.className = "status error"; st.textContent = e.message; }
+}
+
+document.querySelectorAll("[data-use-url]").forEach((b) => {
+  b.onclick = () => {
+    const id = b.dataset.useUrl;
+    chooseCamera($(id).value.trim(), id === "camUrlSetup" ? "camStatusSetup" : "camStatusSettings");
+  };
+});
+
+$("setupForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const st = $("pairStatus");
+  st.className = "status connecting"; st.textContent = "Connecting…";
+  try {
+    await post("/api/setup", {server_url: $("surl").value.trim(), code: $("scode").value.trim()});
+  } catch (err) { st.className = "status error"; st.textContent = err.message; }
+};
+
+$("repair").onclick = async () => {
+  const waiting = view.outbox ? ` ${view.outbox} check-ins not uploaded yet will be deleted.` : "";
+  if (!confirm("Disconnect this kiosk from the server?" + waiting)) return;
+  try { await post("/api/settings/repair"); } catch (e) { alert(e.message); }
+};
+
+// ---------- render ----------
+function renderManage(v) {
+  const mode = v.state === "setup" ? "setup" : v.state === "settings" ? "settings" : "";
+  document.body.classList.toggle("manage", !!mode);
+  $("setupPanel").classList.toggle("hidden", mode !== "setup");
+  $("settingsPanel").classList.toggle("hidden", mode !== "settings");
+  if (mode && mode !== manageMode) {
+    if (mode === "setup") loadCameras("camsSetup", "camStatusSetup");
+    else loadCameras("camsSettings", "camStatusSettings");
+  }
+  manageMode = mode;
+  markCamera();
+  if (mode === "setup") {
+    const p = v.pair || {};
+    const st = $("pairStatus");
+    st.className = "status " + (p.status || "");
+    st.textContent = p.message || "Looking for the QR code…";
+  }
+  if (mode === "settings") {
+    const m = Math.floor((v.remaining || 0) / 60), s = String((v.remaining || 0) % 60).padStart(2, "0");
+    $("settingsTimer").textContent = `Settings close by themselves in ${m}:${s}.`;
+    $("sSpace").textContent = v.space || "–";
+    $("sDevice").textContent = v.device || "–";
+    $("sServer").textContent = v.server || "–";
+    $("sOnline").textContent = v.online ? "Online" : "Offline" + (v.outbox ? `, ${v.outbox} waiting to upload` : "");
+    $("sHttp").classList.toggle("hidden", !(v.server || "").startsWith("http://"));
+  }
+  return !!mode;
+}
+
 function render(v) {
   view = v;
-  $("space").textContent = v.space || "Attendance";
+  $("space").textContent = v.state === "setup" ? "New kiosk" : (v.space || "Attendance");
+  $("netpill").classList.toggle("hidden", v.state === "setup");
   $("netdot").className = "dot " + (v.online ? "on" : "off");
   $("net").textContent = v.online ? "Online" : "Offline – saving locally";
   $("queue").classList.toggle("hidden", !v.outbox);
@@ -166,9 +361,11 @@ function render(v) {
   const stage = $("stage");
   stage.className = "stage " + (v.state === "face" ? "face" : v.state === "scan_qr" ? "qr" : "")
     + (v.camera_ok === false ? " nocamera" : "");
+  if (renderManage(v)) { $("result").classList.add("hidden"); drawBox(null); return; }
+
   $("msg").textContent = v.message || "";
   let sub = "";
-  if (v.state === "face" && v.name) sub = `Verifying ${v.name}` + (v.remaining != null ? ` · ${v.remaining}s` : "");
+  if (v.state === "face" && v.name) sub = `Verifying ${v.name}` + (v.remaining != null ? `, ${v.remaining}s left` : "");
   if (v.state === "scan_qr" && v.remaining != null) sub = `${v.remaining}s`;
   $("sub").textContent = sub;
   const steps = $("steps");
@@ -209,25 +406,6 @@ function connect() {
   ws.onclose = () => { $("msg").textContent = "Reconnecting…"; setTimeout(connect, 1500); };
 }
 
-async function boot() {
-  const s = await (await fetch("/api/status")).json();
-  dev = !!s.dev;
-  $("devpill").classList.toggle("hidden", !dev);
-  if (!s.enrolled) { $("setup").classList.remove("hidden"); return; }
-  connect();
-}
-
-$("setupForm").onsubmit = async (e) => {
-  e.preventDefault();
-  $("serr").textContent = "";
-  const r = await fetch("/api/setup", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({server_url: $("surl").value.trim(), code: $("scode").value.trim()})});
-  const body = await r.json();
-  if (!r.ok) { $("serr").textContent = body.detail || "Setup failed"; return; }
-  $("setup").classList.add("hidden");
-  connect();
-};
-
 $("qrfile").onchange = async (e) => {
   const file = e.target.files[0];
   e.target.value = "";
@@ -242,7 +420,14 @@ $("qrfile").onchange = async (e) => {
   }
 };
 
-boot();
+(async function boot() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    dev = !!s.dev;
+    $("devpill").classList.toggle("hidden", !dev);
+  } catch { /* status is optional; the WebSocket drives the screen */ }
+  connect();
+})();
 </script>
 </body>
 </html>

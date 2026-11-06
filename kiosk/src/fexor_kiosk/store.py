@@ -130,6 +130,10 @@ class Store:
         with self._lock:
             self._db.executemany("DELETE FROM outbox WHERE id=?", [(i,) for i in ids])
 
+    def clear_outbox(self) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM outbox")
+
     def outbox_size(self) -> int:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
@@ -149,7 +153,8 @@ class Store:
 
     def reset(self) -> None:
         with self._lock:
-            self._db.executescript("DELETE FROM kv; DELETE FROM recent;")
+            # Keep local device settings (camera choice) across re-pairing.
+            self._db.executescript("DELETE FROM kv WHERE k NOT IN ('camera'); DELETE FROM recent;")
         self.roster = None
 
 

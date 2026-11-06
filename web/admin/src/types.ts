@@ -10,6 +10,8 @@ export interface Me {
   totp_enabled: boolean;
   csrf: string;
   spaces: { id: string; name: string; mode: Mode; role: Role }[];
+  public_url: string | null;
+  http_mode: boolean;
 }
 
 export interface FieldDef {

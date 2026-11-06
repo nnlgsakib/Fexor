@@ -133,6 +133,8 @@ async def me(p: Principal = Depends(current), db: AsyncSession = Depends(get_db)
         "totp_enabled": p.user.totp_enabled,
         "csrf": p.session.csrf if p.session else None,
         "spaces": spaces,
+        "public_url": get_settings().public_url,
+        "http_mode": not get_settings().secure_cookies,
     }
 
 

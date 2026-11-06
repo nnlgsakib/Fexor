@@ -2,7 +2,7 @@
 # Install the Fexor kiosk on Raspberry Pi OS (64-bit) / Debian / Ubuntu.
 # Run from a copy of the repository:  sudo ./deploy/kiosk/install-linux.sh
 #
-#   CAMERA=0              camera index or stream URL (default 0)
+#   CAMERA=0              optional: camera index or stream URL (otherwise chosen on screen)
 #   CSI_CAMERA=1          Raspberry Pi ribbon-cable camera (wraps the kiosk in libcamerify)
 #   KIOSK_USER=pi         desktop user that should see the full-screen kiosk page
 set -euo pipefail
@@ -11,7 +11,9 @@ set -euo pipefail
 SRC="$(cd "$(dirname "$0")/../.." && pwd)"
 APP=/opt/fexor
 DATA=/var/lib/fexor-kiosk
-CAMERA="${CAMERA:-0}"
+CAMERA="${CAMERA:-}"
+CAMERA_ARG=""
+[[ -n "$CAMERA" ]] && CAMERA_ARG="--camera $CAMERA"
 KIOSK_USER="${KIOSK_USER:-${SUDO_USER:-pi}}"
 
 apt-get update -q
@@ -44,7 +46,7 @@ Environment=FEXOR_KIOSK_DATA=$DATA
 Environment=FEXOR_MODEL_DIR=$DATA/models
 # Set if your server uses a private CA (Caddy "internal"):
 # Environment=FEXOR_KIOSK_CA=$DATA/server-ca.crt
-ExecStart=${WRAP}$APP/.venv/bin/fexor-kiosk run --camera $CAMERA
+ExecStart=${WRAP}$APP/.venv/bin/fexor-kiosk run $CAMERA_ARG
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
@@ -74,6 +76,5 @@ EOF
 fi
 
 echo
-echo "Installed. Open http://127.0.0.1:8300 on this device (it opens full screen after the next login)"
-echo "and enter the server address and the code from Admin > Kiosks > Add kiosk."
-echo "Speed check:  sudo -u fexor $APP/.venv/bin/fexor-kiosk bench --camera $CAMERA"
+echo "Installed. Restart the device: the kiosk screen opens full screen."
+echo "On it, choose the camera, then show it the pairing QR from the admin panel (Kiosks > Add kiosk)."

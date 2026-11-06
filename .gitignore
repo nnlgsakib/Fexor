@@ -12,3 +12,4 @@ wheels/
 # Local secrets and data
 .env
 .fexor-kiosk/
+data/

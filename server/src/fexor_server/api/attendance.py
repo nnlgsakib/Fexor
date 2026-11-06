@@ -25,9 +25,11 @@ from ..models import (
     AttendanceEvent,
     Device,
     EventStatus,
+    FaceTemplate,
     Membership,
     Person,
     Role,
+    Shift,
     Space,
 )
 from ..security import Principal, audit, current, now, require_space
@@ -288,6 +290,14 @@ async def dashboard(day: date | None = None, space: Space = Depends(require_spac
     devices = (await db.execute(select(Device).where(
         Device.space_id == space.id, Device.revoked_at.is_(None)))).scalars().all()
 
+    no_face = (await db.execute(
+        select(func.count()).select_from(Membership).where(
+            Membership.space_id == space.id, Membership.active,
+            ~select(FaceTemplate.id).where(FaceTemplate.person_id == Membership.person_id).exists(),
+        ))).scalar_one()
+    shifts = (await db.execute(select(func.count()).select_from(Shift).where(
+        Shift.space_id == space.id, Shift.active))).scalar_one()
+
     present = sum(counts.get(s, 0) for s in ("present", "late", "half_day"))
     return {
         "day": day,
@@ -303,6 +313,11 @@ async def dashboard(day: date | None = None, space: Space = Depends(require_spac
                      for n, e, c, m in late_top],
         "failure_reasons": dict(failures.most_common()),
         "recent": [event_out(*r) for r in recent],
+        "setup": {
+            "members": total, "members_without_face": no_face, "shifts": shifts,
+            "kiosks_ready": sum(1 for d in devices if d.enrolled_at),
+            "has_checkins": bool(trend and any(trend.values())) or bool(recent),
+        },
         "devices": {
             "total": len(devices),
             "online": sum(1 for d in devices if d.last_seen_at

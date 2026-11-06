@@ -40,7 +40,7 @@ from ..security import (
     require_space,
     sha256,
 )
-from ..services import enqueue, event_dates, public_keys, recompute
+from ..services import active_signing_key, enqueue, event_dates, public_keys, recompute
 from .auth import _rate_limit
 
 router = APIRouter(prefix="/api", tags=["devices"])
@@ -124,6 +124,27 @@ async def revoke_device(device_id: uuid.UUID, request: Request,
     return {"ok": True}
 
 
+SETTINGS_TTL = timedelta(minutes=10)
+
+
+@router.post("/spaces/{space_id}/devices/{device_id}/settings-token")
+async def settings_token(device_id: uuid.UUID, request: Request,
+                         space: Space = Depends(require_space(Role.MANAGER)),
+                         p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
+    """Short-lived QR that opens the settings screen on this one kiosk (checked offline)."""
+    from fexor_core import qr
+
+    d = await _device(db, space, device_id)
+    if not d.enrolled_at or d.revoked_at:
+        raise HTTPException(409, "kiosk is not set up")
+    kid, key = await active_signing_key(db)
+    expires = now() + SETTINGS_TTL
+    token = qr.sign_settings(key, kid, str(d.id), int(expires.timestamp()))
+    audit(db, p, "device.settings_token", space_id=space.id, target=d.id, request=request)
+    await db.commit()
+    return {"token": token, "expires_at": expires}
+
+
 # ---------- device side ----------
 class EnrollIn(BaseModel):
     code: str = Field(max_length=20)
@@ -187,6 +208,7 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
                                    QrCredential.revoked_at.is_(None))
         .order_by(QrCredential.issued_at)
     )).scalars()}
+    await active_signing_key(db)  # exists before first sync, so later settings QRs verify
     keys = await public_keys(db)
 
     h = hashlib.sha256()

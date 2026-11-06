@@ -38,6 +38,14 @@ async def _create_admin(email: str, name: str, password: str) -> None:
     print(f"superadmin {email} created")
 
 
+async def _print_setup_code() -> None:
+    from .api.setup import needs_setup, setup_code
+    from .db import sessionmaker
+
+    async with sessionmaker()() as db:
+        print(setup_code() if await needs_setup(db) else "")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="fexor-server")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -52,6 +60,7 @@ def main() -> None:
     ca.add_argument("--name", default="Administrator")
     sub.add_parser("gen-key", help="print a new FEXOR_DATA_KEY")
     sub.add_parser("models", help="download and verify face models")
+    sub.add_parser("setup-code", help="print the first-run setup code (only while no admin exists)")
     a = p.parse_args()
 
     if a.cmd == "gen-key":
@@ -63,6 +72,7 @@ def main() -> None:
     elif a.cmd == "serve":
         import uvicorn
 
+        migrate()
         uvicorn.run("fexor_server.main:app", host=a.host, port=a.port, workers=a.workers,
                     proxy_headers=True, forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "*"))
     elif a.cmd == "worker":
@@ -72,6 +82,8 @@ def main() -> None:
     elif a.cmd == "create-admin":
         pw = os.environ.get("FEXOR_ADMIN_PASSWORD") or getpass.getpass("Password (min 10 chars): ")
         asyncio.run(_create_admin(a.email, a.name, pw))
+    elif a.cmd == "setup-code":
+        asyncio.run(_print_setup_code())
     elif a.cmd == "models":
         from fexor_core.models import ensure_all
 

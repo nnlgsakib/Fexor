@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -40,6 +41,7 @@ LOCKOUT_FAILURES = 3
 LOCKOUT_WINDOW = 600.0
 LOCKOUT_SECONDS = 300.0
 MIN_FACE_PX = 80
+SETTINGS_SECONDS = 600
 
 PROMPTS = {
     Action.BLINK: "Blink your eyes",
@@ -138,6 +140,8 @@ class Verifier:
         self._lock = threading.Lock()
         self._cmd: str | None = None
         self._qr_text: str | None = None
+        self.on_pairing: Callable[[str], None] | None = None  # set by the app (setup mode)
+        self.settings_until = 0.0
         self.state = "idle"
         self.session: Session | None = None
         self.result: dict[str, Any] | None = None
@@ -169,6 +173,9 @@ class Verifier:
             t, self._qr_text = self._qr_text, None
             return t
 
+    def settings_open(self, now: float | None = None) -> bool:
+        return (self.clock() if now is None else now) < self.settings_until
+
     @property
     def roster(self) -> Roster | None:
         return self.store.roster
@@ -198,6 +205,20 @@ class Verifier:
         cmd = self._take_cmd()
         if cmd == "cancel" and self.state in ("scan_qr", "face"):
             self._to_idle()
+        if cmd == "close_settings":
+            self.settings_until = 0.0
+            self._to_idle()
+        if not self.store.has("token"):  # not set up yet: look for the pairing QR
+            self._idle_tick += 1
+            if frame is not None and self.on_pairing and self._idle_tick % 3 == 0:
+                text = self.pipe.decode_qr(frame)
+                if text and text.startswith("FXP1:"):
+                    self.on_pairing(text)
+            self.view = {"state": "setup"}
+            return
+        if self.settings_open(now):
+            self.view = {"state": "settings", "remaining": int(self.settings_until - now)}
+            return
         if self.roster is None:
             self.view = {"state": "not_ready", "message": "Waiting for first sync with server"}
             return
@@ -255,6 +276,14 @@ class Verifier:
     def _on_qr(self, text: str, now: float) -> None:
         s = self.session
         assert s is not None and self.roster is not None
+        if text.startswith(qr.SETTINGS_PREFIX + "."):
+            self._on_settings_qr(text, now)
+            return
+        if text.startswith("FXP1:"):
+            self.state = "scan_qr"
+            self.view = {"state": "scan_qr", "message": "This kiosk is already set up. "
+                         "To pair it again, open its settings."}
+            return
         if not text.startswith(qr.PREFIX + "."):
             self.state = "scan_qr"
             self.view = {"state": "scan_qr", "message": "That is not an attendance QR code"}
@@ -290,6 +319,27 @@ class Verifier:
         s.started = now  # face step gets its own full time budget, however long the QR took
         self.state = "face"
         self.view = {"state": "face", "name": member.name, "message": "Look straight at the camera"}
+
+    def _on_settings_qr(self, text: str, now: float) -> None:
+        assert self.roster is not None
+        keys = {k: qr.public_key_from_str(v) for k, v in self.roster.keys.items()}
+        offset = float(self.store.get("clock_offset") or 0)
+        try:
+            qr.verify_settings(text, keys, self.store.get("device_id") or "", now + offset)
+        except qr.InvalidToken as e:
+            why = {"other_device": "That settings code is for a different kiosk.",
+                   "expired": "That settings code has expired. Show a new one."}
+            self._to_idle()
+            self.state = "result"
+            self.result_until = now + RESULT_OK_SECONDS
+            self.result = {"ok": False, "reason": "", "review_sent": False, "can_review": False}
+            self.view = {"state": "result", "ok": False, "name": None, "can_review": False,
+                         "message": why.get(str(e), "That settings code is not valid.")}
+            return
+        log.info("settings opened with admin QR")
+        self._to_idle()
+        self.settings_until = now + SETTINGS_SECONDS
+        self.view = {"state": "settings", "remaining": SETTINGS_SECONDS}
 
     # ---------- face ----------
     def _face_step(self, frame: np.ndarray, now: float) -> None:

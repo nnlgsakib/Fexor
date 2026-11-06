@@ -1,4 +1,4 @@
-import { AppShell, Burger, Divider, Group, NavLink, ScrollArea, Select, Stack, Text, UnstyledButton } from "@mantine/core";
+import { Alert, AppShell, Burger, Divider, Group, NavLink, ScrollArea, Select, Stack, Text, UnstyledButton } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
   IconCalendarTime, IconChecklist, IconDeviceDesktop, IconGauge, IconKey, IconListDetails,
@@ -86,6 +86,11 @@ export function Layout() {
       </AppShell.Navbar>
 
       <AppShell.Main bg="#f6f7f5">
+        {me.http_mode && (
+          <Alert color="yellow" variant="light" mb="md" py={8}>
+            Office network mode: connections are not encrypted. Use it only on a network you trust.
+          </Alert>
+        )}
         <Outlet />
       </AppShell.Main>
     </AppShell>

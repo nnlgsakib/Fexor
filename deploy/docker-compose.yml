@@ -1,5 +1,5 @@
-# Fexor server: docker compose --env-file .env up -d
-# Copy deploy/.env.example to deploy/.env first and fill it in.
+# Fexor server. Easiest: run "Start Server" from the project folder; it writes .env for you.
+# Manual: copy deploy/.env.example to deploy/.env, fill it in, then: docker compose up -d
 services:
   db:
     image: postgres:16-alpine
@@ -22,7 +22,8 @@ services:
     environment: &env
       FEXOR_DATABASE_URL: postgresql+asyncpg://fexor:${POSTGRES_PASSWORD}@db:5432/fexor
       FEXOR_DATA_KEY: ${FEXOR_DATA_KEY:?set FEXOR_DATA_KEY (fexor-server gen-key)}
-      FEXOR_SECURE_COOKIES: "true"
+      FEXOR_SECURE_COOKIES: ${FEXOR_SECURE_COOKIES:-true}
+      FEXOR_PUBLIC_URL: ${FEXOR_PUBLIC_URL:-}
       FORWARDED_ALLOW_IPS: "*"
 
   worker:
@@ -38,10 +39,11 @@ services:
     depends_on: [server]
     ports: ["80:80", "443:443"]
     environment:
-      FEXOR_DOMAIN: ${FEXOR_DOMAIN:?set FEXOR_DOMAIN}
-      FEXOR_TLS: ${FEXOR_TLS:?set FEXOR_TLS to an email or "internal"}
+      FEXOR_DOMAIN: ${FEXOR_DOMAIN:-localhost}
+      FEXOR_TLS: ${FEXOR_TLS:-internal}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Caddyfile = HTTPS with a domain; Caddyfile.http = office network, plain HTTP
+      - ./${FEXOR_CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy:/data
 
 volumes:

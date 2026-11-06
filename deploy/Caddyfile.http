@@ -1,0 +1,8 @@
+# Office network mode: plain HTTP on port 80, for trusted networks only.
+:80 {
+	encode zstd gzip
+	request_body {
+		max_size 60MB
+	}
+	reverse_proxy server:8000
+}

@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import admin, attendance, auth, devices, faces, schedule, spaces
+from .api import admin, attendance, auth, devices, faces, schedule, setup, spaces
 from .config import get_settings
 
 CSP = (
@@ -18,7 +18,7 @@ def create_app() -> FastAPI:
     s = get_settings()
     app = FastAPI(title="Fexor", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json",
                   redoc_url=None)
-    for r in (auth, admin, spaces, faces, schedule, devices, attendance):
+    for r in (setup, auth, admin, spaces, faces, schedule, devices, attendance):
         app.include_router(r.router)
 
     @app.middleware("http")

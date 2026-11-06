@@ -26,7 +26,7 @@ def _verify() -> str | bool:
 async def enroll(store: Store, server_url: str, code: str) -> dict[str, Any]:
     server_url = server_url.rstrip("/")
     if not server_url.startswith("https://") and not os.environ.get("FEXOR_KIOSK_ALLOW_HTTP"):
-        raise ValueError("server URL must start with https:// (set FEXOR_KIOSK_ALLOW_HTTP=1 "
+        raise ValueError("server URL must start with https:// (add --allow-http "
                          "for local testing only)")
     async with httpx.AsyncClient(base_url=server_url, timeout=20, verify=_verify()) as c:
         r = await c.post("/api/device/enroll", json={"code": code, "info": device_info(store)})

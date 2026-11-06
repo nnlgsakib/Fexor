@@ -93,7 +93,7 @@ Try a kiosk on the same machine: in the admin panel open a space, go to **Kiosks
 **Add kiosk**, and:
 
 ```bash
-FEXOR_KIOSK_ALLOW_HTTP=1 uv run fexor-kiosk enroll --server http://127.0.0.1:8000 --code ABCDE-FGHJK
+uv run fexor-kiosk enroll --server http://127.0.0.1:8000 --code ABCDE-FGHJK --allow-http
 uv run fexor-kiosk run --camera 0               # open http://127.0.0.1:8300
 ```
 

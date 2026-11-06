@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -64,6 +65,8 @@ def main() -> None:
     en = sub.add_parser("enroll", help="enroll this device (headless)")
     en.add_argument("--server", required=True)
     en.add_argument("--code", required=True)
+    en.add_argument("--allow-http", action="store_true",
+                    help="allow a plain http:// server (local testing only)")
     sub.add_parser("reset", help="forget server enrollment and local roster")
     b = sub.add_parser("bench", help="measure model speed on this machine")
     b.add_argument("--camera", default="0")
@@ -89,9 +92,18 @@ def main() -> None:
         store.reset()
         print(f"reset done; {store.outbox_size()} unsent events kept in the outbox")
     elif a.cmd == "enroll":
+        import httpx
+
         from .sync import enroll
 
-        data = asyncio.run(enroll(store, a.server, a.code))
+        if a.allow_http:
+            os.environ["FEXOR_KIOSK_ALLOW_HTTP"] = "1"
+        try:
+            data = asyncio.run(enroll(store, a.server, a.code))
+        except ValueError as e:
+            sys.exit(f"error: {e}")
+        except httpx.HTTPError as e:
+            sys.exit(f"error: cannot reach {a.server} ({type(e).__name__})")
         print(f"enrolled as '{data['device_name']}' in space '{data['space_name']}'")
     elif a.cmd == "run":
         import uvicorn

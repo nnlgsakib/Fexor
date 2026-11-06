@@ -319,3 +319,78 @@ def test_real_models_qr_then_printed_photo_is_rejected(tmp_path, real_pipe):
     assert v.state == "result" and not v.view["ok"]
     reason = store.pending()[-1]["reason"]
     assert reason.startswith(("challenge", "timeout", "liveness_failed")), reason
+
+
+def _qr_png(text: str) -> bytes:
+    import io
+
+    import segno
+
+    buf = io.BytesIO()
+    segno.make(text, error="m").save(buf, kind="png", scale=8, border=4)
+    return buf.getvalue()
+
+
+class _NoCamera:
+    ok = False
+
+    def start(self):
+        return self
+
+    def stop(self):
+        pass
+
+    def latest(self, after_seq=-1, timeout=1.0):
+        return after_seq, None
+
+
+def _dev_client(tmp_path, monkeypatch, env: str):
+    from fastapi.testclient import TestClient
+    from fexor_kiosk.app import create_app
+
+    monkeypatch.setenv("FEXOR_ENV", env)
+    store = Store(tmp_path)
+    store.save_roster(roster(), None)
+    pipe = FakePipe()
+    app = create_app(store, _NoCamera(), pipeline=pipe)
+    pipe.verifier = app.state.verifier
+    return TestClient(app), app.state.verifier, store  # no `with`: background threads stay off
+
+
+def test_dev_qr_upload_feeds_the_normal_check(tmp_path, monkeypatch):
+    client, v, store = _dev_client(tmp_path, monkeypatch, "dev")
+    assert client.get("/api/status").json()["dev"] is True
+    r = client.post("/api/dev/qr", content=_qr_png(token()), headers={"content-type": "image/png"})
+    assert r.status_code == 200
+    v.step(None, 1_000_000.0)
+    assert v.state == "face" and v.view["name"] == "Alice"
+
+    # Ignored while a face check is running, so it can't cut into someone's check.
+    client.post("/api/dev/qr", content=_qr_png(token("p-bob", "c-bob-new")), headers={"content-type": "image/png"})
+    v.step(None, 1_000_000.5)
+    assert v.state == "face" and v.view["name"] == "Alice"
+    v.command("cancel")
+    v.step(None, 1_000_000.6)
+
+    # Upload is only a different input: forged tokens are still rejected.
+    forged = token(key=Ed25519PrivateKey.generate())
+    client.post("/api/dev/qr", content=_qr_png(forged), headers={"content-type": "image/png"})
+    v.step(None, 1_000_001.0)
+    assert v.state == "result" and not v.view["ok"]
+    assert store.pending()[-1]["reason"].startswith("qr_invalid")
+
+    assert client.post("/api/dev/qr", content=b"not an image").status_code == 400
+    assert client.post("/api/dev/qr", content=b"").status_code == 413
+    import cv2
+
+    ok, white = cv2.imencode(".png", np.full((200, 200, 3), 255, np.uint8))
+    r = client.post("/api/dev/qr", content=white.tobytes())
+    assert r.status_code == 400 and "no QR" in r.json()["detail"]
+    r = client.post("/api/dev/qr", content=_qr_png(token()), headers={"origin": "https://evil.example"})
+    assert r.status_code == 403
+
+
+def test_dev_qr_upload_absent_outside_dev(tmp_path, monkeypatch):
+    client, _, _ = _dev_client(tmp_path, monkeypatch, "production")
+    assert client.get("/api/status").json()["dev"] is False
+    assert client.post("/api/dev/qr", content=_qr_png(token())).status_code in (404, 405)

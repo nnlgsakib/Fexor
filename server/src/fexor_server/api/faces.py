@@ -5,6 +5,7 @@ import re
 import uuid
 import zipfile
 from functools import lru_cache
+from typing import Literal
 
 import cv2
 import segno
@@ -183,9 +184,10 @@ async def reissue_qr(member_id: uuid.UUID, request: Request,
     return {"credential_id": str(cred.id), "issued_at": cred.issued_at}
 
 
-@router.get("/spaces/{space_id}/members/{member_id}/qr.svg")
-async def qr_svg(member_id: uuid.UUID, space: Space = Depends(require_space(Role.MANAGER)),
-                 db: AsyncSession = Depends(get_db)):
+@router.get("/spaces/{space_id}/members/{member_id}/qr.{fmt}")
+async def qr_image(member_id: uuid.UUID, fmt: Literal["svg", "png"],
+                   space: Space = Depends(require_space(Role.MANAGER)),
+                   db: AsyncSession = Depends(get_db)):
     m = await _member(db, space, member_id)
     cred = await current_credential(db, m.person_id)
     if cred is None:
@@ -194,5 +196,9 @@ async def qr_svg(member_id: uuid.UUID, space: Space = Depends(require_space(Role
     token = await token_for(db, cred)
     # Standalone SVG (with xmlns): browsers won't render an <img> SVG without it.
     buf = io.BytesIO()
-    segno.make(token, error="m").save(buf, kind="svg", scale=6, border=2)
-    return Response(buf.getvalue(), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+    segno.make(token, error="m").save(buf, kind=fmt, scale=6 if fmt == "svg" else 10, border=4)
+    headers = {"Cache-Control": "no-store"}
+    if fmt == "png":
+        headers["Content-Disposition"] = f'attachment; filename="qr-{m.external_id}.png"'
+    return Response(buf.getvalue(), media_type="image/svg+xml" if fmt == "svg" else "image/png",
+                    headers=headers)

@@ -127,6 +127,8 @@ async def test_face_enrollment_and_qr(admin, face_jpeg):
     assert photo.headers["content-type"] == "image/jpeg"
     svg = await admin.get(f"{url}/qr.svg")
     assert svg.status_code == 200 and b"xmlns=\"http://www.w3.org/2000/svg\"" in svg.content
+    png = await admin.get(f"{url}/qr.png")
+    assert png.content[1:4] == b"PNG" and "attachment" in png.headers["content-disposition"]
     old = (await admin.get(f"{url}")).json()
     assert old["has_qr"] and old["face_count"] == 1
 

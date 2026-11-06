@@ -7,7 +7,7 @@ import { Dropzone } from "@mantine/dropzone";
 import { useDisclosure } from "@mantine/hooks";
 import { modals } from "@mantine/modals";
 import {
-  IconChevronDown, IconFileSpreadsheet, IconPhotoPlus, IconPlus, IconPrinter, IconSearch, IconTrash, IconUpload,
+  IconChevronDown, IconDownload, IconFileSpreadsheet, IconPhotoPlus, IconPlus, IconPrinter, IconSearch, IconTrash, IconUpload,
 } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -301,6 +301,7 @@ function QrPanel({ space, member, canManage, onChanged }: { space: Space; member
       <Text size="sm" c="dimmed">The code is signed by the server. It only works together with this person's face.</Text>
       <Group>
         <Button variant="default" leftSection={<IconPrinter size={16} />} component="a" href={`/spaces/${space.id}/cards?ids=${member.id}`} target="_blank">Print card</Button>
+        <Button variant="default" leftSection={<IconDownload size={16} />} component="a" href={url(`${base}/qr.png`, { v })}>Download PNG</Button>
         <Button variant="subtle" color="red" onClick={reissue}>Issue new code</Button>
       </Group>
     </Stack>

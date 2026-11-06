@@ -137,6 +137,7 @@ class Verifier:
         self.clock = clock
         self._lock = threading.Lock()
         self._cmd: str | None = None
+        self._qr_text: str | None = None
         self.state = "idle"
         self.session: Session | None = None
         self.result: dict[str, Any] | None = None
@@ -157,6 +158,16 @@ class Verifier:
         with self._lock:
             c, self._cmd = self._cmd, None
             return c
+
+    def submit_qr(self, text: str) -> None:
+        """QR text from somewhere other than the camera (dev-mode upload). Same checks apply."""
+        with self._lock:
+            self._qr_text = text
+
+    def _take_qr(self) -> str | None:
+        with self._lock:
+            t, self._qr_text = self._qr_text, None
+            return t
 
     @property
     def roster(self) -> Roster | None:
@@ -189,6 +200,12 @@ class Verifier:
             self._to_idle()
         if self.roster is None:
             self.view = {"state": "not_ready", "message": "Waiting for first sync with server"}
+            return
+        injected = self._take_qr()
+        if injected and self.state in ("idle", "scan_qr", "result"):
+            self._to_idle()
+            self.session = Session(started=now)
+            self._on_qr(injected, now)
             return
         if self.state == "result":
             if cmd == "review":

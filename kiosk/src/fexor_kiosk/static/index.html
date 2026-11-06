@@ -49,6 +49,10 @@
   button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line);
     font-size: 18px; padding: 12px 28px; min-width: 0; }
   button:active { transform: scale(.98); }
+  .upload { font-size: 16px; color: var(--warn); border: 1px dashed var(--warn); border-radius: 12px;
+    padding: 10px 22px; cursor: pointer; }
+  .uperr { color: var(--bad); font-size: 16px; min-height: 1.2em; }
+  .pill.dev { color: var(--warn); border-color: var(--warn); }
   .hidden { display: none !important; }
   .result { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.72);
     backdrop-filter: blur(4px); }
@@ -78,6 +82,7 @@
   <span class="space" id="space">Attendance</span>
   <span class="pill"><span class="dot" id="netdot"></span><span id="net">Connecting</span></span>
   <span class="pill hidden" id="queue"></span>
+  <span class="pill dev hidden" id="devpill">Test mode</span>
   <span class="spacer"></span>
   <span class="clock" id="clock">--:--</span>
 </header>
@@ -94,6 +99,10 @@
   <div class="steps hidden" id="steps"></div>
   <button id="start">Start verification</button>
   <button id="cancel" class="ghost hidden">Cancel</button>
+  <label class="upload hidden" id="qrup">Test: upload a QR image instead of scanning
+    <input type="file" id="qrfile" accept="image/png,image/jpeg,image/webp" hidden>
+  </label>
+  <div class="uperr" id="uperr"></div>
 </main>
 
 <footer><span id="foot">Your face is checked on this device and is not uploaded.</span></footer>
@@ -125,7 +134,7 @@
 const $ = (id) => document.getElementById(id);
 const OK_ICON = '<circle cx="12" cy="12" r="10" stroke="#2ea043"/><path d="M7 12.5l3.2 3.2L17 9" stroke="#2ea043"/>';
 const BAD_ICON = '<circle cx="12" cy="12" r="10" stroke="#d1453b"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" stroke="#d1453b"/>';
-let ws, view = {}, lastUrl;
+let ws, view = {}, lastUrl, dev = false;
 
 function tick() {
   $("clock").textContent = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
@@ -171,6 +180,7 @@ function render(v) {
   const busy = v.state === "scan_qr" || v.state === "face";
   $("start").classList.toggle("hidden", v.state !== "idle");
   $("cancel").classList.toggle("hidden", !busy);
+  $("qrup").classList.toggle("hidden", !(dev && (v.state === "idle" || v.state === "scan_qr")));
   drawBox(v.state === "face" ? v.box : null);
 
   const res = $("result");
@@ -201,6 +211,8 @@ function connect() {
 
 async function boot() {
   const s = await (await fetch("/api/status")).json();
+  dev = !!s.dev;
+  $("devpill").classList.toggle("hidden", !dev);
   if (!s.enrolled) { $("setup").classList.remove("hidden"); return; }
   connect();
 }
@@ -214,6 +226,20 @@ $("setupForm").onsubmit = async (e) => {
   if (!r.ok) { $("serr").textContent = body.detail || "Setup failed"; return; }
   $("setup").classList.add("hidden");
   connect();
+};
+
+$("qrfile").onchange = async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  $("uperr").textContent = "";
+  const r = await fetch("/api/dev/qr", {method: "POST", body: file,
+    headers: {"Content-Type": file.type || "application/octet-stream"}});
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    $("uperr").textContent = body.detail || "Upload failed";
+    setTimeout(() => { $("uperr").textContent = ""; }, 5000);
+  }
 };
 
 boot();

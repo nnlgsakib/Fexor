@@ -97,6 +97,12 @@ uv run fexor-kiosk enroll --server http://127.0.0.1:8000 --code ABCDE-FGHJK --al
 uv run fexor-kiosk run --camera 0               # open http://127.0.0.1:8300
 ```
 
+**Testing without a second screen:** start the kiosk with `FEXOR_ENV=dev` and the kiosk page shows
+*Test: upload a QR image instead of scanning*. Download the card with **People, QR card, Download
+PNG** and upload it. The token still goes through the full signature and revocation check; only
+the camera step is skipped. The upload endpoint does not exist unless `FEXOR_ENV=dev`, so never set
+it on a real kiosk.
+
 ## Production
 
 ### Server (Docker)

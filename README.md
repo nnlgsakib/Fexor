@@ -94,8 +94,9 @@ On the computer or cloud server that will hold the data:
 
 All passwords and keys are generated for you and saved in `deploy/.env`. **Keep a copy of that
 file somewhere safe:** it holds the key that protects stored face data. The server keeps running
-in the background and starts again with Docker. **Stop Server (Windows).cmd** stops it; your data
-stays.
+in the background and starts again with Docker. **Stop Server (Windows).cmd** (Mac/Linux:
+`./deploy/stop-server.sh`) stops it completely, also any development server; your data stays, and
+it remains stopped until you start it again.
 
 ### 2. Set up a space
 

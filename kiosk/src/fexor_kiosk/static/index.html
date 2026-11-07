@@ -153,8 +153,13 @@
   <!-- First-time setup -->
   <section class="panel hidden" id="setupPanel">
     <div class="topbar">
-      <h1>Set up this kiosk</h1>
+      <h1 id="setupTitle">Set up this kiosk</h1>
       <button class="ghost menubtn quit hidden" id="quitSetupTop">Exit app</button>
+    </div>
+    <div class="box hidden" id="repairBox">
+      <p>Connecting this kiosk to a different server or space. It keeps its current connection
+        (<b id="repairOld"></b>) until the new one works.</p>
+      <div><button class="ghost small" id="cancelNew">Back to the saved connection</button></div>
     </div>
     <div class="box">
       <h2><span class="n">1</span>Choose the camera</h2>
@@ -186,6 +191,23 @@
       </details>
     </div>
     <div><button class="ghost quit hidden" id="quitSetup">Exit app</button></div>
+  </section>
+
+  <!-- Start-up question: keep the saved connection or connect to another server -->
+  <section class="panel hidden" id="resumePanel">
+    <h1>Welcome back</h1>
+    <div class="box">
+      <h2>Saved connection</h2>
+      <dl>
+        <dt>Space</dt><dd id="rSpace"></dd>
+        <dt>Kiosk</dt><dd id="rDevice"></dd>
+        <dt>Server</dt><dd id="rServer"></dd>
+      </dl>
+    </div>
+    <button id="resumeBtn">Continue</button>
+    <button class="ghost" id="newConnBtn">Connect to a different server or space</button>
+    <p id="resumeTimer"></p>
+    <div><button class="ghost small quit hidden" id="quitResume">Exit app</button></div>
   </section>
 
   <!-- Settings, opened with an admin settings QR -->
@@ -285,6 +307,10 @@ $("closeSettings").onclick = () => send("close_settings");
 $("backSettings").onclick = () => send("close_settings");
 $("dismiss").onclick = () => send("dismiss");
 $("quitSetupTop").onclick = () => quitApp();
+$("quitResume").onclick = () => quitApp();
+$("resumeBtn").onclick = () => send("resume");
+$("newConnBtn").onclick = () => send("new_connection");
+$("cancelNew").onclick = () => send("cancel_new");
 
 // ---------- menu: settings and exit need the admin's Settings QR once the kiosk is paired ----------
 function openMenu() {
@@ -423,13 +449,23 @@ $("repair").onclick = async () => {
 
 // ---------- render ----------
 function renderManage(v) {
-  const mode = v.state === "setup" ? "setup" : v.state === "settings" ? "settings" : "";
+  const mode = ["setup", "settings", "resume"].includes(v.state) ? v.state : "";
   document.body.classList.toggle("manage", !!mode);
   $("setupPanel").classList.toggle("hidden", mode !== "setup");
+  $("resumePanel").classList.toggle("hidden", mode !== "resume");
+  if (mode === "resume") {
+    $("rSpace").textContent = v.space || "–";
+    $("rDevice").textContent = v.device || "–";
+    $("rServer").textContent = v.server || "–";
+    $("resumeTimer").textContent = `Continuing with the saved connection in ${v.remaining} s.`;
+  }
+  $("repairBox").classList.toggle("hidden", !(mode === "setup" && v.repairing));
+  $("setupTitle").textContent = mode === "setup" && v.repairing ? "Connect to a new server" : "Set up this kiosk";
+  $("repairOld").textContent = [v.space, v.server].filter(Boolean).join(" on ");
   $("settingsPanel").classList.toggle("hidden", mode !== "settings");
   if (mode && mode !== manageMode) {
     if (mode === "setup") loadCameras("camsSetup", "camStatusSetup");
-    else loadCameras("camsSettings", "camStatusSettings");
+    else if (mode === "settings") loadCameras("camsSettings", "camStatusSettings");
   }
   manageMode = mode;
   markCamera();
@@ -462,8 +498,8 @@ function render(v) {
     if (action === "exit") quitApp(true);
   }
   if (!$("menu").classList.contains("hidden") && (v.state === "face" || v.state === "setup")) closeMenu();
-  $("menuBtn").classList.toggle("hidden", v.state === "setup" || v.state === "settings");
-  $("space").textContent = v.state === "setup" ? "New kiosk" : (v.space || "Attendance");
+  $("menuBtn").classList.toggle("hidden", ["setup", "settings", "resume"].includes(v.state));
+  $("space").textContent = v.state === "setup" && !v.repairing ? "New kiosk" : (v.space || "Attendance");
   $("netpill").classList.toggle("hidden", v.state === "setup");
   $("netdot").className = "dot " + (v.online ? "on" : "off");
   $("net").textContent = v.online ? "Online" : "Offline – saving locally";

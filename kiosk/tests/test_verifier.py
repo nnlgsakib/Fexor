@@ -552,3 +552,60 @@ async def test_change_server_requires_same_server(tmp_path, monkeypatch):
         with pytest.raises(ValueError, match=why):
             await sync.change_server(store, bad)
     assert store.get("server_url") == "http://192.168.1.103"  # unchanged by failures
+
+
+def test_startup_question_continue_auto_and_new_connection(kiosk):
+    from fexor_kiosk.verifier import RESUME_SECONDS
+
+    v, pipe, store = kiosk
+    t = 1_000_000.0
+    v.resume_until = t + RESUME_SECONDS
+    pipe.qr_text = token()
+    v.step(FRAME, t)
+    assert v.view["state"] == "resume" and v.state == "idle"  # no check-ins while asking
+    v.command("resume")
+    v.step(FRAME, t + 1)
+    assert v.view["state"] != "resume"
+
+    v.resume_until = t + 100 + RESUME_SECONDS  # nobody answers: carries on by itself
+    v.step(None, t + 100)
+    assert v.view["state"] == "resume"
+    v.step(None, t + 100 + RESUME_SECONDS + 1)
+    assert v.view["state"] == "idle" and not v.resume_until
+
+    v.command("new_connection")
+    v.step(None, t + 200)
+    assert v.view == {"state": "setup", "repairing": True}
+    assert store.has("token")  # old pairing kept until a new one works
+    v.command("cancel_new")
+    v.step(None, t + 201)
+    assert v.view["state"] == "idle" and not v.repairing
+
+
+def test_app_startup_question_rules(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from fexor_kiosk.app import create_app
+
+    monkeypatch.setenv("FEXOR_ENV", "")
+    store = paired_store(tmp_path)
+    quits = []
+    app = create_app(store, _NoCamera(), pipeline=FakePipe(), on_quit=lambda: quits.append(1),
+                     ask_on_start=True)
+    v, client = app.state.verifier, TestClient(app)
+    assert v.resume_until > v.clock()
+    assert client.post("/api/settings/repair").status_code == 403  # asking doesn't unlock settings
+    assert client.post("/api/settings/quit").status_code == 200 and quits == [1]  # but may exit
+
+    v.resume_until, v.repairing = 0.0, True
+    r = client.post("/api/setup", json={"server_url": "http://127.0.0.1:9", "code": "X"})
+    assert r.status_code == 400  # allowed to try (fails: nothing listens there), not "already set up"
+    assert store.has("token")  # failed attempt keeps the old pairing
+
+
+def test_no_question_for_unpaired_or_cli_kiosk(tmp_path):
+    from fexor_kiosk.app import create_app
+
+    unpaired = create_app(Store(tmp_path / "a"), _NoCamera(), pipeline=FakePipe(), ask_on_start=True)
+    assert unpaired.state.verifier.resume_until == 0.0
+    cli = create_app(paired_store(tmp_path / "b"), _NoCamera(), pipeline=FakePipe())
+    assert cli.state.verifier.resume_until == 0.0

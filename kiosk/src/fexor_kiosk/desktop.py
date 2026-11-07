@@ -75,7 +75,8 @@ def _start_server(data: Path, quit_event: threading.Event):
 
     store = Store(data)
     camera = Camera(os.environ.get("FEXOR_KIOSK_CAMERA") or store.get("camera") or "0")
-    app = create_app(store, camera, Path(os.environ["FEXOR_MODEL_DIR"]), on_quit=quit_event.set)
+    app = create_app(store, camera, Path(os.environ["FEXOR_MODEL_DIR"]), on_quit=quit_event.set,
+                     ask_on_start=True)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT, log_level="warning",
                                            log_config=None))
     thread = threading.Thread(target=server.run, daemon=True, name="kiosk-server")

@@ -170,6 +170,7 @@
         </form>
       </details>
     </div>
+    <div><button class="ghost quit hidden" id="quitSetup">Exit app</button></div>
   </section>
 
   <!-- Settings, opened with an admin settings QR -->
@@ -200,7 +201,10 @@
       <p>Disconnects this kiosk from its server so you can set it up again.</p>
       <div><button class="small danger" id="repair">Disconnect this kiosk</button></div>
     </div>
-    <div><button id="closeSettings">Close settings</button></div>
+    <div class="row">
+      <button id="closeSettings">Close settings</button>
+      <button class="ghost quit hidden" id="quitSettings">Exit app</button>
+    </div>
   </section>
 </main>
 
@@ -223,7 +227,7 @@ const $ = (id) => document.getElementById(id);
 const OK_ICON = '<circle cx="12" cy="12" r="10" stroke="#2ea043"/><path d="M7 12.5l3.2 3.2L17 9" stroke="#2ea043"/>';
 const BAD_ICON = '<circle cx="12" cy="12" r="10" stroke="#d1453b"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" stroke="#d1453b"/>';
 const CAMERA_SLOTS = 6;
-let ws, view = {}, lastUrl, dev = false, manageMode = "";
+let ws, view = {}, lastUrl, dev = false, manageMode = "", canQuit = false;
 
 function tick() {
   $("clock").textContent = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
@@ -313,6 +317,13 @@ $("setupForm").onsubmit = async (e) => {
     await post("/api/setup", {server_url: $("surl").value.trim(), code: $("scode").value.trim()});
   } catch (err) { st.className = "status error"; st.textContent = err.message; }
 };
+
+async function quitApp() {
+  if (!confirm("Close the kiosk app? People can't check in until it is started again.")) return;
+  try { await post("/api/settings/quit"); } catch (e) { alert(e.message); }
+}
+$("quitSettings").onclick = quitApp;
+$("quitSetup").onclick = quitApp;
 
 $("repair").onclick = async () => {
   const waiting = view.outbox ? ` ${view.outbox} check-ins not uploaded yet will be deleted.` : "";
@@ -424,7 +435,9 @@ $("qrfile").onchange = async (e) => {
   try {
     const s = await (await fetch("/api/status")).json();
     dev = !!s.dev;
+    canQuit = !!s.can_quit;
     $("devpill").classList.toggle("hidden", !dev);
+    document.querySelectorAll(".quit").forEach((b) => b.classList.toggle("hidden", !canQuit));
   } catch { /* status is optional; the WebSocket drives the screen */ }
   connect();
 })();

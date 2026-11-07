@@ -13,3 +13,6 @@ wheels/
 .env
 .fexor-kiosk/
 data/
+packaging/build/
+packaging/dist/
+packaging/dist-debug/

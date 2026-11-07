@@ -74,43 +74,55 @@ camera (not built in yet).
 
 ### 1. Start the server
 
-On the computer that will hold the data (an office PC or a small server):
+On the computer or cloud server that will hold the data:
 
-1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and open it once.
+1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine on
+   a Linux server) and open it once.
 2. Double-click **Start Server (Windows).cmd** in this folder. On Mac or Linux, run
    `./deploy/start-server.sh`.
-3. The first time, it asks one question:
+3. The first time, it asks how the server will be reached:
    - **Office network only:** simplest. The admin panel and the kiosks must be on the same network.
      Traffic is not encrypted, so use this only on a network you trust.
-   - **Internet:** needs a domain name pointing to this computer. Gets an HTTPS certificate
-     automatically.
-4. When it's ready, your browser opens on **Welcome to Fexor**. Create your admin account; the
-   setup code is already filled in.
+   - **Internet, own domain:** a domain pointing to this computer, ports 80 and 443 open. Gets an
+     HTTPS certificate automatically.
+   - **Internet, Cloudflare:** HTTPS through a free Cloudflare Tunnel. Nothing to open on the
+     router; needs a Cloudflare account with your domain on it. The script tells you where to get
+     the tunnel token.
+4. It downloads the ready-made server image (or builds it if none is published yet), then your
+   browser opens on **Welcome to Fexor**. Create your admin account; the setup code is already
+   filled in.
 
 All passwords and keys are generated for you and saved in `deploy/.env`. **Keep a copy of that
 file somewhere safe:** it holds the key that protects stored face data. The server keeps running
-in the background and starts again with Docker Desktop. **Stop Server (Windows).cmd** stops it;
-your data stays.
+in the background and starts again with Docker. **Stop Server (Windows).cmd** stops it; your data
+stays.
 
 ### 2. Set up a space
 
 Open a space and follow **Get this space ready** on its overview: add people (or import a
 spreadsheet), add face photos, set working hours, print QR cards.
 
-### 3. Set up a kiosk
+### 3. Set up a kiosk with the desktop app
 
-On the kiosk computer (any PC, laptop or Raspberry Pi with a camera):
+On the kiosk computer, download the installer from the
+[Releases page](https://github.com/nnlgsakib/Fexor/releases):
 
-1. Copy this folder to it and double-click **Install Kiosk (Windows).cmd**. On a Raspberry Pi,
-   run `sudo ./deploy/kiosk/install-linux.sh` once.
-2. The kiosk screen opens full screen on **Set up this kiosk**. Pick the camera from the preview
-   pictures, or type a phone camera address (DroidCam).
-3. In the admin panel, go to **Kiosks → Add kiosk**. Hold the QR code it shows in front of the
+| Kiosk computer | File | Install |
+| --- | --- | --- |
+| Windows 10/11 PC or laptop | `FexorKiosk-Setup-<version>-windows-x64.exe` | Double-click. Leave **Start automatically when this user signs in** ticked. |
+| Raspberry Pi 5 (64-bit Raspberry Pi OS) | `fexor-kiosk_<version>_arm64.deb` | Double-click to open it in the package installer, or `sudo apt install ./fexor-kiosk_<version>_arm64.deb` |
+| Linux PC (Debian, Ubuntu) | `fexor-kiosk_<version>_amd64.deb` | As above |
+| Mac (Apple silicon) | `FexorKiosk-<version>-macos-arm64.dmg` | Drag **Fexor Kiosk** to Applications. The first time, right-click it and choose **Open**. |
+
+The app opens full screen on **Set up this kiosk**:
+
+1. Pick the camera from the preview pictures, or type a phone camera address (DroidCam).
+2. In the admin panel, go to **Kiosks → Add kiosk**. Hold the QR code it shows in front of the
    kiosk camera. The kiosk connects by itself.
 
-To change the camera or move the kiosk to another space later, click **Settings QR** next to the
-kiosk in the admin panel and show it to the kiosk camera. The code works for 10 minutes and only
-on that kiosk.
+The app starts by itself after every sign-in. To change the camera, move the kiosk to another
+space or close the app, click **Settings QR** next to the kiosk in the admin panel and show it to
+the kiosk camera. The code works for 10 minutes and only on that kiosk.
 
 ## Development
 
@@ -146,8 +158,12 @@ it on a real kiosk.
   `docker compose up -d` in `deploy/`. Then open the admin panel; the setup code comes from
   `docker compose exec server fexor-server setup-code`.
 - **Office network mode** serves plain HTTP on port 80. Kiosks accept plain HTTP only for
-  local-network addresses (private IPs, `localhost`, `.local`/`.lan` names); a public server must
-  use HTTPS.
+  local-network addresses (private IPs, `localhost`, `.local`/`.lan` names); a server on the
+  internet must use HTTPS (own domain or Cloudflare Tunnel mode).
+- **Cloudflare Tunnel by hand:** in `deploy/.env` set `COMPOSE_PROFILES=tunnel`,
+  `CF_TUNNEL_TOKEN=<token>`, `FEXOR_CADDYFILE=Caddyfile.http`, `FEXOR_SECURE_COOKIES=true` and
+  `FEXOR_PUBLIC_URL=https://<your hostname>`. The tunnel's public hostname points to
+  `http://caddy:80`.
 - **Back up** the `db` volume (`pg_dump`) and keep `FEXOR_DATA_KEY` safe and separate from the
   backups. Without the key, stored faces and two-step sign-in secrets can't be read.
 - The `server` container runs migrations on start. Scale API processes with `FEXOR_WORKERS`.
@@ -155,7 +171,8 @@ it on a real kiosk.
 ### Kiosk notes
 
 A Raspberry Pi 5 (4 GB+) with a USB webcam and a touch screen is a good low-cost kiosk. Use 64-bit
-Raspberry Pi OS. For the ribbon-cable camera install with `sudo CSI_CAMERA=1 ./deploy/kiosk/install-linux.sh`.
+Raspberry Pi OS with the desktop, set to sign in automatically. For the ribbon-cable camera module,
+set `PI_CAMERA_MODULE=1` in `/etc/default/fexor-kiosk` and install `libcamera-v4l2`.
 
 - **Check-ins while offline** are stored on the kiosk and uploaded when the network is back.
 - **Kiosk clock:** the kiosk corrects its clock offset from the server. The dashboard warns when a
@@ -164,6 +181,24 @@ Raspberry Pi OS. For the ribbon-cable camera install with `sudo CSI_CAMERA=1 ./d
   data. Turn on full-disk encryption on kiosks in public places.
 - **Moving a kiosk** to another space (Settings QR → Disconnect) first uploads what it can; check-ins
   that still can't be uploaded are deleted, and the screen says how many.
+- **App data and log:** `%LOCALAPPDATA%\Fexor Kiosk` (Windows), `~/Library/Application Support/Fexor Kiosk`
+  (Mac), `~/.local/share/Fexor Kiosk` (Linux). `kiosk.log` and `crash.log` are there.
+- **Script installs** (`deploy/kiosk/install-linux.sh`, `install-windows.ps1`) still work for
+  machines where you prefer running from source.
+
+### Releasing
+
+Push a version tag to build everything:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+GitHub Actions then publishes the server image `ghcr.io/nnlgsakib/fexor-server` (PC and ARM
+servers) and attaches the kiosk installers (Windows, macOS, Linux, Raspberry Pi) to a release.
+After the first run, open the package on GitHub (**Packages**, **fexor-server**, **Package
+settings**) and make it **Public** so servers can download it without signing in. To build a kiosk
+installer locally: `uv sync --extra desktop --group build && uv run python packaging/build.py`.
 
 ## Security
 
@@ -187,6 +222,7 @@ core/     shared face, liveness, movement-test, QR signing and encryption code
 server/   FastAPI app, database models and migrations, rules engine, worker, CLI
 kiosk/    camera, verification state machine, offline store, sync, kiosk web page
 web/admin React + Mantine admin panel
+packaging/ desktop kiosk app build (PyInstaller spec, Windows/Linux/macOS installers)
 deploy/   Dockerfile companions: compose file, Caddyfile, kiosk installers
 ```
 

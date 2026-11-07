@@ -106,6 +106,17 @@ In the admin panel:
 
 4. Open http://127.0.0.1:8300. You should see the camera picture and **Online** at the top.
 
+**As a desktop app window instead of a browser tab** (full screen, starts like any program):
+
+```bash
+uv sync --extra desktop
+uv run fexor-kiosk app
+```
+
+In the app, the camera and pairing are chosen on screen. Kiosk computers that don't have Python
+can use the ready-made installers instead; see "Set up a kiosk with the desktop app" in the
+[README](../README.md).
+
 **Wrong or black camera?** Stop the kiosk with Ctrl+C and try `--camera 1`, `--camera 2` and so
 on. For a phone with DroidCam, use the address the app shows:
 `uv run fexor-kiosk run --camera http://192.168.1.5:4747/video`.
@@ -157,6 +168,7 @@ Stop any of them with Ctrl+C. Pairing, people and records are kept.
 
 ## More
 
-- Production install with Docker, HTTPS and Raspberry Pi kiosks: see the [README](../README.md).
+- Production install with Docker, HTTPS (own domain or Cloudflare Tunnel) and kiosk installers for
+  Windows, macOS, Linux and Raspberry Pi: see the [README](../README.md).
 - Testing without a second screen: start the kiosk with `FEXOR_ENV=dev` to upload a QR image
   instead of scanning one (testing only).

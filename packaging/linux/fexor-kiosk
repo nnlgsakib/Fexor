@@ -1,0 +1,9 @@
+#!/bin/sh
+# Starts the Fexor Kiosk desktop app. Settings: /etc/default/fexor-kiosk
+[ -r /etc/default/fexor-kiosk ] && . /etc/default/fexor-kiosk
+export FEXOR_KIOSK_CAMERA FEXOR_KIOSK_CA
+# Raspberry Pi camera module (ribbon cable) needs the libcamera compatibility layer.
+if [ "${PI_CAMERA_MODULE:-0}" = "1" ] && command -v libcamerify >/dev/null 2>&1; then
+  exec libcamerify "/opt/fexor-kiosk/Fexor Kiosk" "$@"
+fi
+exec "/opt/fexor-kiosk/Fexor Kiosk" "$@"

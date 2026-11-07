@@ -1,5 +1,6 @@
 # --- admin web app ---
-FROM node:24-alpine AS web
+# Built once on the build machine: the output is plain files, the same for every CPU type.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS web
 WORKDIR /web
 COPY web/admin/package.json web/admin/package-lock.json ./
 RUN npm ci

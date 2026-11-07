@@ -10,6 +10,10 @@ dependencies = [
     "httpx>=0.28",
 ]
 
+[project.optional-dependencies]
+# Native window for the desktop app. Linux and Raspberry Pi use Chromium instead.
+desktop = ["pywebview>=6.2; sys_platform != 'linux'"]
+
 [project.scripts]
 fexor-kiosk = "fexor_kiosk.main:main"
 

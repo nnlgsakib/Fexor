@@ -72,9 +72,17 @@ def main() -> None:
     b.add_argument("--camera", default="0")
     b.add_argument("--seconds", type=float, default=15)
     sub.add_parser("models", help="download and verify models")
+    sub.add_parser("app", help="start the desktop app (full-screen kiosk window)")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
+    if a.cmd == "app":
+        from .desktop import run as run_desktop
+
+        if a.data_dir:
+            os.environ["FEXOR_KIOSK_DATA"] = a.data_dir
+        run_desktop()
+        return
     if a.cmd == "models":
         from fexor_core.models import ensure_all
 

@@ -2,3 +2,4 @@
 *.ps1 text eol=crlf
 *.sh text eol=lf
 Caddyfile* text eol=lf
+packaging/linux/* text eol=lf

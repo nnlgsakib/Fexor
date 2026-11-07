@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["fexor-core", "fexor-server", "fexor-kiosk"]
 
+[project.optional-dependencies]
+desktop = ["fexor-kiosk[desktop]"]
+
 [tool.uv.workspace]
 members = ["core", "server", "kiosk"]
 
@@ -16,6 +19,7 @@ fexor-kiosk = { workspace = true }
 
 [dependency-groups]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8", "httpx>=0.28"]
+build = ["pyinstaller>=6.11"]
 
 [tool.ruff]
 line-length = 120

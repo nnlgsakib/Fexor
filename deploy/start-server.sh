@@ -19,29 +19,53 @@ lan_ip() {
 if [[ ! -f .env ]]; then
   echo "First-time setup"
   echo "  1) Office network only  - simplest; kiosks and admins on the same network"
-  echo "  2) Internet             - needs a domain name pointing to this computer (HTTPS)"
-  read -rp "Choose 1 or 2 (default 1): " mode
-  {
-    echo "POSTGRES_PASSWORD=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
-    echo "FEXOR_DATA_KEY=$(head -c 32 /dev/urandom | base64)"
-    if [[ "$mode" == "2" ]]; then
-      read -rp "Domain name, e.g. attendance.example.com: " domain
-      read -rp "Your email (for certificate notices): " email
-      [[ -n "$domain" && -n "$email" ]] || need "Domain and email are both needed for internet mode."
-      echo "FEXOR_CADDYFILE=Caddyfile"; echo "FEXOR_DOMAIN=$domain"; echo "FEXOR_TLS=$email"
-      echo "FEXOR_SECURE_COOKIES=true"; echo "FEXOR_PUBLIC_URL=https://$domain"
-    else
-      echo "FEXOR_CADDYFILE=Caddyfile.http"; echo "FEXOR_SECURE_COOKIES=false"
-      echo "FEXOR_PUBLIC_URL=http://$(lan_ip || echo localhost)"
-    fi
-  } > .env
-  chmod 600 .env
+  echo "  2) Internet, own domain - domain points to this computer, ports 80 and 443 open (HTTPS)"
+  echo "  3) Internet, Cloudflare - HTTPS through a Cloudflare Tunnel; no router changes needed"
+  read -rp "Choose 1, 2 or 3 (default 1): " mode
+  cfg="POSTGRES_PASSWORD=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')
+FEXOR_DATA_KEY=$(head -c 32 /dev/urandom | base64)"
+  if [[ "$mode" == "3" ]]; then
+    echo "In the Cloudflare dashboard: Zero Trust > Networks > Tunnels > Create a tunnel (Cloudflared)."
+    echo "Add a public hostname (e.g. attendance.example.com) with service http://caddy:80,"
+    echo "then copy the tunnel token shown in the install command."
+    read -rp "Public hostname, e.g. attendance.example.com: " host
+    read -rp "Tunnel token: " token
+    [[ -n "$host" && -n "$token" ]] || need "The hostname and the tunnel token are both needed."
+    cfg+="
+COMPOSE_PROFILES=tunnel
+CF_TUNNEL_TOKEN=$token
+FEXOR_CADDYFILE=Caddyfile.http
+FEXOR_SECURE_COOKIES=true
+FEXOR_PUBLIC_URL=https://$host"
+  elif [[ "$mode" == "2" ]]; then
+    read -rp "Domain name, e.g. attendance.example.com: " domain
+    read -rp "Your email (for certificate notices): " email
+    [[ -n "$domain" && -n "$email" ]] || need "Domain and email are both needed for internet mode."
+    cfg+="
+FEXOR_CADDYFILE=Caddyfile
+FEXOR_DOMAIN=$domain
+FEXOR_TLS=$email
+FEXOR_SECURE_COOKIES=true
+FEXOR_PUBLIC_URL=https://$domain"
+  else
+    cfg+="
+FEXOR_CADDYFILE=Caddyfile.http
+FEXOR_SECURE_COOKIES=false
+FEXOR_PUBLIC_URL=http://$(lan_ip || echo localhost)"
+  fi
+  (umask 077 && printf '%s
+' "$cfg" > .env)
   say "Settings saved in deploy/.env. Keep a copy somewhere safe: it holds the key that protects stored face data."
 fi
 url=$(grep '^FEXOR_PUBLIC_URL=' .env | cut -d= -f2-)
 
 say "Starting... the first time this takes a few minutes."
-docker compose --env-file .env up -d --build
+if docker compose --env-file .env pull server; then
+  docker compose --env-file .env up -d
+else
+  echo "No ready-made server image available; building it here instead."
+  docker compose --env-file .env up -d --build
+fi
 echo "Waiting for the server to be ready..."
 for _ in $(seq 120); do
   docker compose --env-file .env exec -T server python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')" >/dev/null 2>&1 && break

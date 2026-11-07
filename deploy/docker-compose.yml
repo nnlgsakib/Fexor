@@ -1,5 +1,12 @@
-# Fexor server. Easiest: run "Start Server" from the project folder; it writes .env for you.
-# Manual: copy deploy/.env.example to deploy/.env, fill it in, then: docker compose up -d
+# Fexor server: database, API + admin panel, background worker, web front.
+# Easiest: run "Start Server" from the project folder; it writes .env for you.
+# Manual: copy .env.example to .env, fill it in, then:  docker compose up -d
+#
+# Three ways to reach it (set in .env):
+#   office network   FEXOR_CADDYFILE=Caddyfile.http                          plain HTTP, port 80
+#   own domain       FEXOR_CADDYFILE=Caddyfile                               HTTPS via Let's Encrypt
+#   Cloudflare       FEXOR_CADDYFILE=Caddyfile.http + COMPOSE_PROFILES=tunnel + CF_TUNNEL_TOKEN
+#                    HTTPS through a Cloudflare Tunnel, no router ports to open
 services:
   db:
     image: postgres:16-alpine
@@ -15,19 +22,20 @@ services:
       retries: 20
 
   server:
+    # Published image; `docker compose up --build` builds it from this folder instead.
+    image: ${FEXOR_IMAGE:-ghcr.io/nnlgsakib/fexor-server:latest}
     build: { context: .., dockerfile: Dockerfile }
-    image: fexor-server:latest
     restart: unless-stopped
     depends_on: { db: { condition: service_healthy } }
     environment: &env
       FEXOR_DATABASE_URL: postgresql+asyncpg://fexor:${POSTGRES_PASSWORD}@db:5432/fexor
-      FEXOR_DATA_KEY: ${FEXOR_DATA_KEY:?set FEXOR_DATA_KEY (fexor-server gen-key)}
+      FEXOR_DATA_KEY: ${FEXOR_DATA_KEY:?set FEXOR_DATA_KEY}
       FEXOR_SECURE_COOKIES: ${FEXOR_SECURE_COOKIES:-true}
       FEXOR_PUBLIC_URL: ${FEXOR_PUBLIC_URL:-}
       FORWARDED_ALLOW_IPS: "*"
 
   worker:
-    image: fexor-server:latest
+    image: ${FEXOR_IMAGE:-ghcr.io/nnlgsakib/fexor-server:latest}
     restart: unless-stopped
     depends_on: [server]
     environment: *env
@@ -42,9 +50,20 @@ services:
       FEXOR_DOMAIN: ${FEXOR_DOMAIN:-localhost}
       FEXOR_TLS: ${FEXOR_TLS:-internal}
     volumes:
-      # Caddyfile = HTTPS with a domain; Caddyfile.http = office network, plain HTTP
       - ./${FEXOR_CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy:/data
+
+  cloudflared:
+    # Only with COMPOSE_PROFILES=tunnel. In the Cloudflare dashboard (Zero Trust, Networks,
+    # Tunnels) create a tunnel, add a public hostname pointing to http://caddy:80, and put
+    # its token in CF_TUNNEL_TOKEN.
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    depends_on: [caddy]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:-}
 
 volumes:
   db:

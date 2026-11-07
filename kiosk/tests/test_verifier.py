@@ -479,3 +479,32 @@ def test_kiosk_settings_api_locked_until_settings_qr(tmp_path, monkeypatch):
     assert not store.has("token") and store.get("camera") == "1"  # camera choice survives
     # Unpaired kiosks are open for setup.
     assert client.get("/api/status").json()["settings_open"] is True
+
+
+def test_exit_app_only_in_desktop_and_when_unlocked(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from fexor_kiosk.app import create_app
+
+    monkeypatch.setenv("FEXOR_ENV", "")
+    store = paired_store(tmp_path)
+    plain = TestClient(create_app(store, _NoCamera(), pipeline=FakePipe()))
+    assert plain.post("/api/settings/quit").status_code == 404  # not the desktop app
+
+    quits = []
+    app = create_app(store, _NoCamera(), pipeline=FakePipe(), on_quit=lambda: quits.append(1))
+    client = TestClient(app)
+    assert client.get("/api/status").json()["can_quit"] is True
+    assert client.post("/api/settings/quit").status_code == 403  # paired kiosk, settings locked
+    app.state.verifier.settings_until = app.state.verifier.clock() + 600
+    assert client.post("/api/settings/quit", headers={"origin": "https://evil.example"}).status_code == 403
+    assert client.post("/api/settings/quit").status_code == 200 and quits == [1]
+
+
+def test_desktop_data_dir_per_platform(monkeypatch, tmp_path):
+    from fexor_kiosk import desktop
+
+    monkeypatch.setenv("FEXOR_KIOSK_DATA", str(tmp_path / "x"))
+    assert desktop.app_data_dir() == tmp_path / "x"
+    monkeypatch.delenv("FEXOR_KIOSK_DATA")
+    assert desktop.app_data_dir().name == "Fexor Kiosk"
+    assert desktop.bundled_models() is None  # not packaged

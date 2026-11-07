@@ -62,7 +62,11 @@ class Camera:
         return self
 
     def stop(self) -> None:
+        # Wait for the reader to release the device: exiting while it is inside a read can hang
+        # some Windows camera drivers.
         self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
 
     def set_source(self, source: str | int) -> None:
         """Switch camera without restarting the kiosk."""

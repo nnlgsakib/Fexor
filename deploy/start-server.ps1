@@ -51,10 +51,20 @@ if ($LASTEXITCODE -ne 0) {
 if (-not (Test-Path $envFile)) {
     Write-Host "First-time setup" -ForegroundColor Cyan
     Write-Host "  1) Office network only  - simplest; kiosks and admins on the same network"
-    Write-Host "  2) Internet             - needs a domain name pointing to this computer (HTTPS)"
-    $mode = Read-Host "Choose 1 or 2 (default 1)"
+    Write-Host "  2) Internet, own domain - domain points to this computer, ports 80 and 443 open (HTTPS)"
+    Write-Host "  3) Internet, Cloudflare - HTTPS through a Cloudflare Tunnel; no router changes needed"
+    $mode = Read-Host "Choose 1, 2 or 3 (default 1)"
     $lines = @("POSTGRES_PASSWORD=$((RandomBase64 24) -replace '[^A-Za-z0-9]', '')", "FEXOR_DATA_KEY=$(RandomBase64 32)")
-    if ($mode -eq "2") {
+    if ($mode -eq "3") {
+        Write-Host "In the Cloudflare dashboard: Zero Trust > Networks > Tunnels > Create a tunnel (Cloudflared)."
+        Write-Host "Add a public hostname (e.g. attendance.example.com) with service http://caddy:80,"
+        Write-Host "then copy the tunnel token shown in the install command."
+        $hostName = (Read-Host "Public hostname, e.g. attendance.example.com").Trim()
+        $token = (Read-Host "Tunnel token").Trim()
+        if (-not $hostName -or -not $token) { Done "The hostname and the tunnel token are both needed." }
+        $lines += @("COMPOSE_PROFILES=tunnel", "CF_TUNNEL_TOKEN=$token", "FEXOR_CADDYFILE=Caddyfile.http",
+                    "FEXOR_SECURE_COOKIES=true", "FEXOR_PUBLIC_URL=https://$hostName")
+    } elseif ($mode -eq "2") {
         $domain = (Read-Host "Domain name, e.g. attendance.example.com").Trim()
         $email = (Read-Host "Your email (for certificate notices)").Trim()
         if (-not $domain -or -not $email) { Done "Domain and email are both needed for internet mode." }
@@ -76,7 +86,13 @@ $publicUrl = ((Get-Content $envFile | Where-Object { $_ -like "FEXOR_PUBLIC_URL=
 Push-Location $deploy
 try {
     Write-Host "Starting... the first time this takes a few minutes." -ForegroundColor Cyan
-    docker compose --env-file .env up -d --build
+    docker compose --env-file .env pull server
+    if ($LASTEXITCODE -eq 0) {
+        docker compose --env-file .env up -d
+    } else {
+        Write-Host "No ready-made server image available; building it here instead."
+        docker compose --env-file .env up -d --build
+    }
     if ($LASTEXITCODE -ne 0) { Done "Starting failed. See the messages above." }
 
     Write-Host "Waiting for the server to be ready..."

@@ -1,0 +1,12 @@
+Package: fexor-kiosk
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Fexor <fexor@example.com>
+Section: misc
+Priority: optional
+Depends: libc6
+Recommends: chromium | chromium-browser
+Suggests: libcamera-v4l2
+Description: Fexor attendance kiosk
+ Checks people in with a signed QR card and their face, on this device.
+ Starts full screen after sign-in; pairing and settings happen on screen.

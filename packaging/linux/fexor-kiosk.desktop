@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Fexor Kiosk
+Comment=Attendance kiosk
+Exec=fexor-kiosk
+Terminal=false
+Categories=Office;
+X-GNOME-Autostart-Delay=5

@@ -1,0 +1,91 @@
+# Release: push a tag like v0.2.0 (git tag v0.2.0 && git push origin v0.2.0).
+# Publishes the server image to ghcr.io and attaches the kiosk installers to a GitHub Release.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:   # manual run: builds everything, publishes the image as :edge, no release
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.0.0-dev' }}
+
+jobs:
+  server-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/fexor-server
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  kiosk:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: windows-x64 }
+          - { os: macos-latest, name: macos-arm64 }
+          - { os: ubuntu-22.04, name: linux-x64 }        # older glibc = runs on more distros
+          - { os: ubuntu-22.04-arm, name: linux-arm64 }  # Raspberry Pi OS 64-bit
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+      - run: uv sync --frozen --extra desktop --group build
+      - run: uv run python packaging/build.py
+        env:
+          FEXOR_VERSION: ${{ env.VERSION }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kiosk-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            packaging/dist/*.exe
+            packaging/dist/*.zip
+            packaging/dist/*.dmg
+            packaging/dist/*.deb
+
+  release:
+    needs: [server-image, kiosk]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

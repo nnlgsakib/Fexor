@@ -56,7 +56,7 @@ def _same_origin(origin: str | None, host: str | None) -> bool:
 
 
 def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
-               pipeline: Pipeline | None = None) -> FastAPI:
+               pipeline: Pipeline | None = None, on_quit=None) -> FastAPI:
     verifier = Verifier(store, pipeline or RealPipeline(model_dir), camera)
     dev = dev_mode()
     syncer = Syncer(store, extra_info=lambda: {"camera_ok": camera.ok})
@@ -120,7 +120,17 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
                 "space_name": store.get("space_name"), "device_name": store.get("device_name"),
                 "server_url": store.get("server_url"),
                 "sync": syncer.status, "outbox": store.outbox_size(), "camera_ok": camera.ok,
-                "camera": str(camera.source), "dev": dev, "settings_open": unlocked()}
+                "camera": str(camera.source), "dev": dev, "settings_open": unlocked(),
+                "can_quit": on_quit is not None}
+
+    @app.post("/api/settings/quit")
+    async def quit_app(request: Request):
+        """Desktop app only: close the kiosk window (settings must be unlocked)."""
+        if on_quit is None:
+            raise HTTPException(404, "not running as the desktop app")
+        require_unlocked(request)
+        on_quit()
+        return {"ok": True}
 
     @app.get("/api/cameras/{index}/snapshot")
     async def camera_snapshot(index: int, request: Request):

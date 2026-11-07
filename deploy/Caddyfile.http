@@ -1,4 +1,12 @@
-# Office network mode: plain HTTP on port 80, for trusted networks only.
+# Plain HTTP on port 80: office network mode, or behind a Cloudflare Tunnel (which adds HTTPS).
+{
+	servers {
+		# Pass on the visitor's address from a proxy in front (cloudflared), so per-person
+		# login limits keep working.
+		trusted_proxies static private_ranges
+	}
+}
+
 :80 {
 	encode zstd gzip
 	request_body {

@@ -85,6 +85,31 @@ async def enroll(store: Store, server_url: str, code: str) -> dict[str, Any]:
     return data
 
 
+async def change_server(store: Store, server_url: str) -> str:
+    """Point a paired kiosk at a new address of the SAME server (e.g. its IP changed).
+
+    Saved only if that address accepts this kiosk's token, so a typo or a different server
+    can never take over the kiosk.
+    """
+    url = normalize_url(server_url)
+    if url.startswith("http://") and not http_allowed(url):
+        raise ValueError("this address is on the internet but not using https://, which is not safe")
+    token = store.get("token", sealed=True)
+    try:
+        async with httpx.AsyncClient(base_url=url, timeout=10, verify=_verify()) as c:
+            r = await c.post("/api/device/heartbeat", json={"info": device_info(store)},
+                             headers={"Authorization": f"Bearer {token}"})
+    except httpx.HTTPError as e:
+        raise ValueError(f"cannot reach {url} ({type(e).__name__})") from e
+    if r.status_code == 401:
+        raise ValueError("that server does not know this kiosk. To use a different server, "
+                         "disconnect the kiosk and pair it again.")
+    if r.status_code != 200:
+        raise ValueError(f"{url} answered with an error ({r.status_code}); is it the Fexor server?")
+    store.set("server_url", url)
+    return url
+
+
 def device_info(store: Store, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     r = store.roster
     return {

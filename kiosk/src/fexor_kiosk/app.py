@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from .camera import Camera, snapshot
 from .store import Store
-from .sync import Syncer, enroll, parse_pairing
+from .sync import Syncer, change_server, enroll, parse_pairing
 from .verifier import Pipeline, RealPipeline, Verifier
 
 STATIC = Path(__file__).parent / "static"
@@ -163,6 +163,19 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
         store.set("camera", src)
         camera.set_source(src)
         return {"ok": True}
+
+    @app.post("/api/settings/server")
+    async def set_server(body: CameraIn, request: Request):
+        """New address for the same server (body.source = the URL)."""
+        require_unlocked(request)
+        if not store.has("token"):
+            raise HTTPException(409, "pair the kiosk first")
+        try:
+            url = await change_server(store, body.source)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        syncer.poke()
+        return {"server_url": url}
 
     @app.post("/api/settings/repair")
     async def repair(request: Request):

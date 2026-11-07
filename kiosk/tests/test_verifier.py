@@ -519,3 +519,36 @@ def test_dismiss_closes_result_at_once(kiosk):
     v.command("dismiss")
     v.step(FRAME, t + 0.1)
     assert v.state == "idle"
+
+
+async def test_change_server_requires_same_server(tmp_path, monkeypatch):
+    import httpx
+    from fexor_kiosk import sync
+
+    store = paired_store(tmp_path)
+    store.set("server_url", "http://192.168.1.101")
+    answers = {"http://192.168.1.103": 200, "http://192.168.1.104": 401}
+
+    class FakeClient:
+        def __init__(self, base_url, **kw):
+            self.base = base_url
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, path, **kw):
+            if self.base not in answers:
+                raise httpx.ConnectError("refused")
+            return httpx.Response(answers[self.base])
+
+    monkeypatch.setattr(sync.httpx, "AsyncClient", FakeClient)
+    assert await sync.change_server(store, "192.168.1.103") == "http://192.168.1.103"
+    assert store.get("server_url") == "http://192.168.1.103"
+    for bad, why in [("192.168.1.104", "does not know this kiosk"), ("192.168.1.105", "cannot reach"),
+                     ("http://attendance.example.com", "not using https")]:
+        with pytest.raises(ValueError, match=why):
+            await sync.change_server(store, bad)
+    assert store.get("server_url") == "http://192.168.1.103"  # unchanged by failures

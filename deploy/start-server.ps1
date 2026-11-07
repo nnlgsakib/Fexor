@@ -28,9 +28,16 @@ function RandomBase64([int]$bytes) {
 }
 
 function LanAddress {
-    $ip = Get-NetIPConfiguration -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq "Up" } |
-        ForEach-Object { $_.IPv4Address.IPAddress } | Select-Object -First 1
+    # The address of the network Windows prefers for outgoing traffic (lowest default-route metric),
+    # so a PC with both Ethernet and Wi-Fi gets the one the rest of the office can reach.
+    $route = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+        Sort-Object { $_.RouteMetric + (Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4).InterfaceMetric } |
+        Select-Object -First 1
+    $ip = $null
+    if ($route) {
+        $ip = Get-NetIPAddress -InterfaceIndex $route.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty IPAddress
+    }
     if (-not $ip) { $ip = "localhost" }
     return $ip
 }
@@ -100,6 +107,28 @@ function Ensure-Settings {
     Write-Host ""
 }
 
+function Update-OfficeAddress {
+    # Office network mode stores this computer's IP address. Routers can hand out a new one; then
+    # the admin panel and the pairing QR would point to an address that is no longer this computer.
+    $lines = Get-Content $envFile
+    $urlLine = $lines | Where-Object { $_ -like "FEXOR_PUBLIC_URL=http://*" } | Select-Object -First 1
+    if (-not $urlLine -or ($lines -match "^COMPOSE_PROFILES=.*tunnel")) { return }
+    $oldHost = ([uri]($urlLine -replace "^FEXOR_PUBLIC_URL=", "")).Host
+    if ($oldHost -notmatch "^\d{1,3}(\.\d{1,3}){3}$") { return }  # a name, not an IP: leave it
+    $mine = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress })
+    if ($mine -contains $oldHost) { return }
+    $newHost = LanAddress
+    if ($newHost -eq "localhost") { return }
+    $lines = $lines | ForEach-Object { if ($_ -eq $urlLine) { "FEXOR_PUBLIC_URL=http://$newHost" } else { $_ } }
+    [System.IO.File]::WriteAllLines($envFile, $lines)
+    Write-Host ""
+    Write-Host "This computer's network address changed from $oldHost to $newHost." -ForegroundColor Yellow
+    Write-Host "Kiosks paired with the old address: open their settings (Settings QR) and enter" -ForegroundColor Yellow
+    Write-Host "http://$newHost as the server address. To stop this happening, reserve this" -ForegroundColor Yellow
+    Write-Host "computer's address in your router (often called DHCP reservation)." -ForegroundColor Yellow
+    Write-Host ""
+}
+
 function Start-Stack {
     Write-Host "Starting... the first time this takes a few minutes." -ForegroundColor Cyan
     if ((Compose-Quiet pull server) -eq 0) {
@@ -155,6 +184,7 @@ Write-Host ""
 try {
     Ensure-Docker
     Ensure-Settings
+    Update-OfficeAddress
     Push-Location $deploy
     try { Start-Stack; Show-Result } finally { Pop-Location }
 } catch {

@@ -204,6 +204,12 @@
         <dt>Status</dt><dd id="sOnline"></dd>
       </dl>
       <div class="warnline hidden" id="sHttp">This connection is not encrypted. Use it only on a trusted office network.</div>
+      <p>Server moved to a new address (for example its IP changed)? Enter it here; the kiosk stays paired.</p>
+      <div class="row">
+        <input id="serverUrl" placeholder="http://192.168.1.20">
+        <button class="small" id="saveServer">Save</button>
+      </div>
+      <div class="status" id="serverStatus"></div>
     </div>
     <div class="box">
       <h2>Camera</h2>
@@ -400,6 +406,15 @@ async function quitApp(confirmed = false) {
 $("quitSettings").onclick = quitApp;
 $("quitSetup").onclick = quitApp;
 
+$("saveServer").onclick = async () => {
+  const st = $("serverStatus");
+  st.className = "status connecting"; st.textContent = "Checking the address…";
+  try {
+    const r = await post("/api/settings/server", {source: $("serverUrl").value.trim()});
+    st.className = "status done"; st.textContent = `Saved. Using ${r.server_url}.`;
+  } catch (e) { st.className = "status error"; st.textContent = e.message; }
+};
+
 $("repair").onclick = async () => {
   const waiting = view.outbox ? ` ${view.outbox} check-ins not uploaded yet will be deleted.` : "";
   if (!confirm("Disconnect this kiosk from the server?" + waiting)) return;
@@ -430,6 +445,7 @@ function renderManage(v) {
     $("sSpace").textContent = v.space || "–";
     $("sDevice").textContent = v.device || "–";
     $("sServer").textContent = v.server || "–";
+    if (!$("serverUrl").value) $("serverUrl").value = v.server || "";
     $("sOnline").textContent = v.online ? "Online" : "Offline" + (v.outbox ? `, ${v.outbox} waiting to upload` : "");
     $("sHttp").classList.toggle("hidden", !(v.server || "").startsWith("http://"));
   }

@@ -1,5 +1,8 @@
 """Desktop app: runs the kiosk in the background and shows it full screen in its own window.
 
+It opens on a list of saved sessions (one per pairing with a server and space): open one or
+start a new one. "Session list" in the kiosk's settings returns to it.
+
 Windows and macOS use a native window (pywebview). Linux and Raspberry Pi use Chromium in
 kiosk mode, which Raspberry Pi OS ships with. Everything else (pairing, camera, settings)
 happens on the kiosk screen itself.
@@ -66,28 +69,70 @@ def _setup_logging(data: Path) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-def _start_server(data: Path, quit_event: threading.Event):
+def _serve(app):
+    """Run a web app on the kiosk port in a background thread; wait until it answers."""
     import uvicorn
 
-    from .app import create_app
-    from .camera import Camera
-    from .store import Store
-
-    store = Store(data)
-    camera = Camera(os.environ.get("FEXOR_KIOSK_CAMERA") or store.get("camera") or "0")
-    app = create_app(store, camera, Path(os.environ["FEXOR_MODEL_DIR"]), on_quit=quit_event.set,
-                     ask_on_start=True)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT, log_level="warning",
                                            log_config=None))
     thread = threading.Thread(target=server.run, daemon=True, name="kiosk-server")
     thread.start()
     for _ in range(300):  # model loading takes a few seconds on small machines
         if _port_open():
-            break
+            return server, thread
         if not thread.is_alive():
-            raise RuntimeError("kiosk server failed to start; see kiosk.log")
+            break
         time.sleep(0.1)
-    return server, thread
+    raise RuntimeError("kiosk server failed to start; see kiosk.log")
+
+
+def _stop(server, thread) -> None:
+    server.should_exit = True
+    thread.join(timeout=15)
+
+
+def _wait(*events: threading.Event) -> None:
+    while not any(e.is_set() for e in events):
+        time.sleep(0.1)
+
+
+def _controller(root: Path, quit_event: threading.Event) -> None:
+    """Session list -> chosen session's kiosk -> back to the list, until the app is closed."""
+    from .app import create_app
+    from .camera import Camera
+    from .sessions import create_sessions_app, migrate_legacy
+    from .store import Store
+
+    migrate_legacy(root)
+    models = Path(os.environ["FEXOR_MODEL_DIR"])
+    try:
+        while not quit_event.is_set():
+            chosen: dict = {}
+            picked = threading.Event()
+
+            def open_session(path: Path, chosen=chosen, picked=picked) -> None:
+                chosen["path"] = path
+                picked.set()
+
+            srv = _serve(create_sessions_app(root, on_open=open_session, on_quit=quit_event.set))
+            _wait(picked, quit_event)
+            _stop(*srv)
+            if quit_event.is_set():
+                break
+
+            log.info("opening session %s", chosen["path"].name)
+            store = Store(chosen["path"])
+            camera = Camera(os.environ.get("FEXOR_KIOSK_CAMERA") or store.get("camera") or "0")
+            switch = threading.Event()
+            srv = _serve(create_app(store, camera, models, on_quit=quit_event.set,
+                                    on_switch=switch.set))
+            _wait(switch, quit_event)
+            _stop(*srv)
+            store.close()
+    except Exception:
+        log.exception("kiosk app failed")
+    finally:
+        quit_event.set()
 
 
 def _find_chromium() -> str | None:
@@ -142,20 +187,21 @@ def run() -> None:
     os.environ.setdefault("FEXOR_MODEL_DIR", str(models))
     quit_event = threading.Event()
 
-    server = None
     if _port_open():
         log.info("kiosk already running; opening its window")
     else:
         from fexor_core.models import ensure_all
 
         ensure_all(Path(os.environ["FEXOR_MODEL_DIR"]))  # no-op when bundled
-        server, thread = _start_server(data, quit_event)
-    try:
-        _show_window(data, quit_event)
-    finally:
-        if server is not None:
-            server.should_exit = True
-            thread.join(timeout=10)
+        threading.Thread(target=_controller, args=(data, quit_event), daemon=True,
+                         name="controller").start()
+        for _ in range(300):  # wait for the session list before showing the window
+            if _port_open() or quit_event.is_set():
+                break
+            time.sleep(0.1)
+    _show_window(data, quit_event)
+    quit_event.set()
+    time.sleep(1)  # let the current screen's server stop cleanly
     os._exit(0)  # camera drivers can keep threads alive; the window is closed, so leave
 
 

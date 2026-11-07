@@ -56,12 +56,8 @@ def _same_origin(origin: str | None, host: str | None) -> bool:
 
 
 def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
-               pipeline: Pipeline | None = None, on_quit=None, ask_on_start: bool = False) -> FastAPI:
+               pipeline: Pipeline | None = None, on_quit=None, on_switch=None) -> FastAPI:
     verifier = Verifier(store, pipeline or RealPipeline(model_dir), camera)
-    if ask_on_start and store.has("token"):
-        from .verifier import RESUME_SECONDS
-
-        verifier.resume_until = verifier.clock() + RESUME_SECONDS
     dev = dev_mode()
     syncer = Syncer(store, extra_info=lambda: {"camera_ok": camera.ok})
     pair: dict = {"status": "idle", "message": ""}
@@ -70,7 +66,7 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
 
     def unlocked() -> bool:
         """Local settings are open before pairing, or after scanning an admin settings QR."""
-        return not store.has("token") or verifier.settings_open() or verifier.repairing
+        return not store.has("token") or verifier.settings_open()
 
     def require_unlocked(request: Request) -> None:
         if not _same_origin(request.headers.get("origin"), request.headers.get("host")):
@@ -78,26 +74,11 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
         if not unlocked():
             raise HTTPException(403, "settings are locked; scan a settings QR from the admin panel")
 
-    async def pair_server(url: str, code: str) -> dict:
-        """Pair with a server. When switching from another one, upload what we can to the old
-        server first; whatever is left can't go to the new one, so it is dropped."""
-        switching = store.has("token")
-        if switching:
-            try:
-                await syncer.once()
-            except Exception:  # noqa: BLE001, S110 - offline: leftovers dropped after pairing
-                pass
-        data = await enroll(store, url, code)
-        if switching:
-            store.clear_outbox()
-        verifier.repairing = False
-        return data
-
     async def pair_with(text: str) -> None:
         try:
             url, code = parse_pairing(text)
             pair.update(status="connecting", message=f"Connecting to {url}...")
-            data = await pair_server(url, code)
+            data = await enroll(store, url, code)
             pair.update(status="done", message=f"Connected to {data['space_name']}")
             syncer.poke()
         except Exception as e:  # noqa: BLE001 - shown to the person setting up
@@ -119,11 +100,13 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
     async def lifespan(app: FastAPI):
         loop_ref["loop"] = asyncio.get_running_loop()
         camera.start()
-        threading.Thread(target=verifier.run, daemon=True, name="verifier").start()
+        worker = threading.Thread(target=verifier.run, daemon=True, name="verifier")
+        worker.start()
         task = asyncio.create_task(syncer.run())
         yield
         task.cancel()
         verifier.stop()
+        await asyncio.to_thread(worker.join, 5)  # finish the current frame before the store closes
         camera.stop()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -140,15 +123,23 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
                 "server_url": store.get("server_url"),
                 "sync": syncer.status, "outbox": store.outbox_size(), "camera_ok": camera.ok,
                 "camera": str(camera.source), "dev": dev, "settings_open": unlocked(),
-                "can_quit": on_quit is not None}
+                "can_quit": on_quit is not None, "can_switch": on_switch is not None}
+
+    @app.post("/api/settings/switch")
+    async def switch_session(request: Request):
+        """Desktop app only: back to the session list (settings must be unlocked)."""
+        if on_switch is None:
+            raise HTTPException(404, "not running as the desktop app")
+        require_unlocked(request)
+        on_switch()
+        return {"ok": True}
 
     @app.post("/api/settings/quit")
     async def quit_app(request: Request):
         """Desktop app only: close the kiosk window (settings must be unlocked)."""
         if on_quit is None:
             raise HTTPException(404, "not running as the desktop app")
-        if verifier.resume_until <= verifier.clock():  # the start-up question may exit
-            require_unlocked(request)
+        require_unlocked(request)
         on_quit()
         return {"ok": True}
 
@@ -237,10 +228,10 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
     async def setup(body: SetupIn, request: Request):
         if not _same_origin(request.headers.get("origin"), request.headers.get("host")):
             raise HTTPException(403, "bad origin")
-        if store.has("token") and not verifier.repairing:
+        if store.has("token"):
             raise HTTPException(409, "already set up; open settings to pair it again")
         try:
-            data = await pair_server(body.server_url, body.code)
+            data = await enroll(store, body.server_url, body.code)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         except Exception as e:  # noqa: BLE001 - network problems, shown to the person setting up
@@ -259,8 +250,7 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
         async def reader():
             while True:
                 msg = json.loads(await sock.receive_text())
-                if msg.get("cmd") in ("start", "cancel", "review", "dismiss", "close_settings", "resume",
-                                      "new_connection", "cancel_new"):
+                if msg.get("cmd") in ("start", "cancel", "review", "dismiss", "close_settings"):
                     verifier.command(msg["cmd"])
                     if msg["cmd"] == "review":
                         syncer.poke()

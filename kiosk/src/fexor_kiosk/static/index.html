@@ -153,13 +153,11 @@
   <!-- First-time setup -->
   <section class="panel hidden" id="setupPanel">
     <div class="topbar">
-      <h1 id="setupTitle">Set up this kiosk</h1>
-      <button class="ghost menubtn quit hidden" id="quitSetupTop">Exit app</button>
-    </div>
-    <div class="box hidden" id="repairBox">
-      <p>Connecting this kiosk to a different server or space. It keeps its current connection
-        (<b id="repairOld"></b>) until the new one works.</p>
-      <div><button class="ghost small" id="cancelNew">Back to the saved connection</button></div>
+      <h1>Set up this kiosk</h1>
+      <span class="row">
+        <button class="ghost menubtn switch hidden" id="switchSetup">Session list</button>
+        <button class="ghost menubtn quit hidden" id="quitSetupTop">Exit app</button>
+      </span>
     </div>
     <div class="box">
       <h2><span class="n">1</span>Choose the camera</h2>
@@ -193,28 +191,14 @@
     <div><button class="ghost quit hidden" id="quitSetup">Exit app</button></div>
   </section>
 
-  <!-- Start-up question: keep the saved connection or connect to another server -->
-  <section class="panel hidden" id="resumePanel">
-    <h1>Welcome back</h1>
-    <div class="box">
-      <h2>Saved connection</h2>
-      <dl>
-        <dt>Space</dt><dd id="rSpace"></dd>
-        <dt>Kiosk</dt><dd id="rDevice"></dd>
-        <dt>Server</dt><dd id="rServer"></dd>
-      </dl>
-    </div>
-    <button id="resumeBtn">Continue</button>
-    <button class="ghost" id="newConnBtn">Connect to a different server or space</button>
-    <p id="resumeTimer"></p>
-    <div><button class="ghost small quit hidden" id="quitResume">Exit app</button></div>
-  </section>
-
   <!-- Settings, opened with an admin settings QR -->
   <section class="panel hidden" id="settingsPanel">
     <div class="topbar">
       <h1>Kiosk settings</h1>
-      <button class="ghost menubtn" id="backSettings">Back to kiosk</button>
+      <span class="row">
+        <button class="ghost menubtn switch hidden" id="switchSettings">Session list</button>
+        <button class="ghost menubtn" id="backSettings">Back to kiosk</button>
+      </span>
     </div>
     <p id="settingsTimer"></p>
     <div class="box">
@@ -307,10 +291,14 @@ $("closeSettings").onclick = () => send("close_settings");
 $("backSettings").onclick = () => send("close_settings");
 $("dismiss").onclick = () => send("dismiss");
 $("quitSetupTop").onclick = () => quitApp();
-$("quitResume").onclick = () => quitApp();
-$("resumeBtn").onclick = () => send("resume");
-$("newConnBtn").onclick = () => send("new_connection");
-$("cancelNew").onclick = () => send("cancel_new");
+
+// Desktop app: back to the list of saved sessions. The page reloads once the list is up.
+async function switchSession() {
+  try { await post("/api/settings/switch"); } catch (e) { alert(e.message); return; }
+  $("msg").textContent = "Opening the session list…";
+}
+$("switchSetup").onclick = switchSession;
+$("switchSettings").onclick = switchSession;
 
 // ---------- menu: settings and exit need the admin's Settings QR once the kiosk is paired ----------
 function openMenu() {
@@ -449,23 +437,13 @@ $("repair").onclick = async () => {
 
 // ---------- render ----------
 function renderManage(v) {
-  const mode = ["setup", "settings", "resume"].includes(v.state) ? v.state : "";
+  const mode = v.state === "setup" ? "setup" : v.state === "settings" ? "settings" : "";
   document.body.classList.toggle("manage", !!mode);
   $("setupPanel").classList.toggle("hidden", mode !== "setup");
-  $("resumePanel").classList.toggle("hidden", mode !== "resume");
-  if (mode === "resume") {
-    $("rSpace").textContent = v.space || "–";
-    $("rDevice").textContent = v.device || "–";
-    $("rServer").textContent = v.server || "–";
-    $("resumeTimer").textContent = `Continuing with the saved connection in ${v.remaining} s.`;
-  }
-  $("repairBox").classList.toggle("hidden", !(mode === "setup" && v.repairing));
-  $("setupTitle").textContent = mode === "setup" && v.repairing ? "Connect to a new server" : "Set up this kiosk";
-  $("repairOld").textContent = [v.space, v.server].filter(Boolean).join(" on ");
   $("settingsPanel").classList.toggle("hidden", mode !== "settings");
   if (mode && mode !== manageMode) {
     if (mode === "setup") loadCameras("camsSetup", "camStatusSetup");
-    else if (mode === "settings") loadCameras("camsSettings", "camStatusSettings");
+    else loadCameras("camsSettings", "camStatusSettings");
   }
   manageMode = mode;
   markCamera();
@@ -498,8 +476,8 @@ function render(v) {
     if (action === "exit") quitApp(true);
   }
   if (!$("menu").classList.contains("hidden") && (v.state === "face" || v.state === "setup")) closeMenu();
-  $("menuBtn").classList.toggle("hidden", ["setup", "settings", "resume"].includes(v.state));
-  $("space").textContent = v.state === "setup" && !v.repairing ? "New kiosk" : (v.space || "Attendance");
+  $("menuBtn").classList.toggle("hidden", v.state === "setup" || v.state === "settings");
+  $("space").textContent = v.state === "setup" ? "New kiosk" : (v.space || "Attendance");
   $("netpill").classList.toggle("hidden", v.state === "setup");
   $("netdot").className = "dot " + (v.online ? "on" : "off");
   $("net").textContent = v.online ? "Online" : "Offline – saving locally";
@@ -551,7 +529,15 @@ function connect() {
     if (lastUrl) URL.revokeObjectURL(lastUrl);
     lastUrl = url;
   };
-  ws.onclose = () => { $("msg").textContent = "Reconnecting…"; setTimeout(connect, 1500); };
+  ws.onclose = async () => {
+    $("msg").textContent = "Reconnecting…";
+    // The desktop app may have switched to its session list on this same address.
+    try {
+      const s = await (await fetch("/api/status")).json();
+      if (s.mode === "sessions") { location.reload(); return; }
+    } catch { /* not up yet */ }
+    setTimeout(connect, 1500);
+  };
 }
 
 $("qrfile").onchange = async (e) => {
@@ -573,6 +559,7 @@ $("qrfile").onchange = async (e) => {
     const s = await (await fetch("/api/status")).json();
     dev = !!s.dev;
     canQuit = !!s.can_quit;
+    document.querySelectorAll(".switch").forEach((b) => b.classList.toggle("hidden", !s.can_switch));
     $("devpill").classList.toggle("hidden", !dev);
     document.querySelectorAll(".quit").forEach((b) => b.classList.toggle("hidden", !canQuit));
   } catch { /* status is optional; the WebSocket drives the screen */ }

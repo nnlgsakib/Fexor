@@ -42,7 +42,6 @@ LOCKOUT_WINDOW = 600.0
 LOCKOUT_SECONDS = 300.0
 MIN_FACE_PX = 80
 SETTINGS_SECONDS = 600
-RESUME_SECONDS = 20  # start-up question: continue with the saved connection automatically after this
 
 PROMPTS = {
     Action.BLINK: "Blink your eyes",
@@ -143,8 +142,6 @@ class Verifier:
         self._qr_text: str | None = None
         self.on_pairing: Callable[[str], None] | None = None  # set by the app (setup mode)
         self.settings_until = 0.0
-        self.resume_until = 0.0  # > now: asking whether to keep the saved connection
-        self.repairing = False  # pairing with a new server while keeping the old pairing until it works
         self.state = "idle"
         self.session: Session | None = None
         self.result: dict[str, Any] | None = None
@@ -211,29 +208,14 @@ class Verifier:
         if cmd == "close_settings":
             self.settings_until = 0.0
             self._to_idle()
-        if cmd == "resume":
-            self.resume_until, self.repairing = 0.0, False
-            self._to_idle()
-        if cmd == "new_connection":
-            self.resume_until, self.repairing = 0.0, True
-        if cmd == "cancel_new":
-            self.repairing = False
-            self._to_idle()
-        paired = self.store.has("token")
-        if not paired or self.repairing:  # look for a pairing QR
+        if not self.store.has("token"):  # not set up yet: look for the pairing QR
             self._idle_tick += 1
             if frame is not None and self.on_pairing and self._idle_tick % 3 == 0:
                 text = self.pipe.decode_qr(frame)
                 if text and text.startswith("FXP1:"):
                     self.on_pairing(text)
-            self.view = {"state": "setup", "repairing": paired}
+            self.view = {"state": "setup"}
             return
-        if self.resume_until:
-            if now < self.resume_until:
-                self.view = {"state": "resume", "remaining": int(self.resume_until - now) + 1}
-                return
-            self.resume_until = 0.0  # nobody answered: carry on with the saved connection
-            self._to_idle()
         if self.settings_open(now):
             self.view = {"state": "settings", "remaining": int(self.settings_until - now)}
             return

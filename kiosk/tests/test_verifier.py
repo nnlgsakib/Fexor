@@ -554,58 +554,56 @@ async def test_change_server_requires_same_server(tmp_path, monkeypatch):
     assert store.get("server_url") == "http://192.168.1.103"  # unchanged by failures
 
 
-def test_startup_question_continue_auto_and_new_connection(kiosk):
-    from fexor_kiosk.verifier import RESUME_SECONDS
+def test_sessions_migrate_list_open_new_delete(tmp_path):
+    from fastapi.testclient import TestClient
+    from fexor_kiosk import sessions
 
-    v, pipe, store = kiosk
-    t = 1_000_000.0
-    v.resume_until = t + RESUME_SECONDS
-    pipe.qr_text = token()
-    v.step(FRAME, t)
-    assert v.view["state"] == "resume" and v.state == "idle"  # no check-ins while asking
-    v.command("resume")
-    v.step(FRAME, t + 1)
-    assert v.view["state"] != "resume"
+    # An older app kept one connection directly in its folder: it becomes the first session.
+    legacy = paired_store(tmp_path)
+    legacy.set("space_name", "Head Office")
+    legacy.set("device_name", "Lobby")
+    legacy.set("server_url", "http://192.168.1.103")
+    legacy.close()
+    sessions.migrate_legacy(tmp_path)
+    assert not (tmp_path / "kiosk.db").exists()
+    [s] = sessions.list_sessions(tmp_path)
+    assert (s["space"], s["kiosk"], s["server"], s["paired"]) == ("Head Office", "Lobby", "http://192.168.1.103", True)
+    moved = Store(tmp_path / "sessions" / s["id"])
+    assert moved.get("token", sealed=True) == "fxd_test"  # still readable after the move
+    moved.close()
 
-    v.resume_until = t + 100 + RESUME_SECONDS  # nobody answers: carries on by itself
-    v.step(None, t + 100)
-    assert v.view["state"] == "resume"
-    v.step(None, t + 100 + RESUME_SECONDS + 1)
-    assert v.view["state"] == "idle" and not v.resume_until
+    opened, quits = [], []
+    app = sessions.create_sessions_app(tmp_path, on_open=opened.append, on_quit=lambda: quits.append(1))
+    c = TestClient(app)
+    assert c.get("/api/status").json() == {"mode": "sessions"}
+    assert [x["id"] for x in c.get("/api/sessions").json()["sessions"]] == [s["id"]]
+    assert c.post(f"/api/sessions/{s['id']}/open").status_code == 200 and opened[-1].name == s["id"]
+    assert c.post("/api/sessions/..%2F..%2Fx/open").status_code == 404
+    assert c.post("/api/sessions/doesnotexist/open").status_code == 404
+    assert c.post("/api/sessions").status_code == 200 and opened[-1].is_dir() and opened[-1].name != s["id"]
+    assert len(c.get("/api/sessions").json()["sessions"]) == 2
+    assert c.delete(f"/api/sessions/{s['id']}").status_code == 200
+    assert [x["paired"] for x in c.get("/api/sessions").json()["sessions"]] == [False]
+    assert c.post("/api/quit", headers={"origin": "https://evil.example"}).status_code == 403
+    assert c.post("/api/quit").status_code == 200 and quits == [1]
 
-    v.command("new_connection")
-    v.step(None, t + 200)
-    assert v.view == {"state": "setup", "repairing": True}
-    assert store.has("token")  # old pairing kept until a new one works
-    v.command("cancel_new")
-    v.step(None, t + 201)
-    assert v.view["state"] == "idle" and not v.repairing
 
-
-def test_app_startup_question_rules(tmp_path, monkeypatch):
+def test_session_list_button_needs_unlock(tmp_path):
     from fastapi.testclient import TestClient
     from fexor_kiosk.app import create_app
 
-    monkeypatch.setenv("FEXOR_ENV", "")
-    store = paired_store(tmp_path)
-    quits = []
-    app = create_app(store, _NoCamera(), pipeline=FakePipe(), on_quit=lambda: quits.append(1),
-                     ask_on_start=True)
-    v, client = app.state.verifier, TestClient(app)
-    assert v.resume_until > v.clock()
-    assert client.post("/api/settings/repair").status_code == 403  # asking doesn't unlock settings
-    assert client.post("/api/settings/quit").status_code == 200 and quits == [1]  # but may exit
+    switches = []
+    plain = TestClient(create_app(paired_store(tmp_path / "a"), _NoCamera(), pipeline=FakePipe()))
+    assert plain.post("/api/settings/switch").status_code == 404  # not the desktop app
 
-    v.resume_until, v.repairing = 0.0, True
-    r = client.post("/api/setup", json={"server_url": "http://127.0.0.1:9", "code": "X"})
-    assert r.status_code == 400  # allowed to try (fails: nothing listens there), not "already set up"
-    assert store.has("token")  # failed attempt keeps the old pairing
+    app = create_app(paired_store(tmp_path / "b"), _NoCamera(), pipeline=FakePipe(),
+                     on_switch=lambda: switches.append(1))
+    c = TestClient(app)
+    assert c.get("/api/status").json()["can_switch"] is True
+    assert c.post("/api/settings/switch").status_code == 403  # paired, settings locked
+    app.state.verifier.settings_until = app.state.verifier.clock() + 600
+    assert c.post("/api/settings/switch").status_code == 200 and switches == [1]
 
-
-def test_no_question_for_unpaired_or_cli_kiosk(tmp_path):
-    from fexor_kiosk.app import create_app
-
-    unpaired = create_app(Store(tmp_path / "a"), _NoCamera(), pipeline=FakePipe(), ask_on_start=True)
-    assert unpaired.state.verifier.resume_until == 0.0
-    cli = create_app(paired_store(tmp_path / "b"), _NoCamera(), pipeline=FakePipe())
-    assert cli.state.verifier.resume_until == 0.0
+    unpaired = TestClient(create_app(Store(tmp_path / "c"), _NoCamera(), pipeline=FakePipe(),
+                                     on_switch=lambda: switches.append(2)))
+    assert unpaired.post("/api/settings/switch").status_code == 200  # setup screen: always allowed

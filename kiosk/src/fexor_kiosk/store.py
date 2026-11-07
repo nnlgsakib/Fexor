@@ -72,6 +72,11 @@ class Store:
         """)
         self.roster: Roster | None = self._load_roster()
 
+    def close(self) -> None:
+        """Release the database file (Windows can't move or delete it while it is open)."""
+        with self._lock:
+            self._db.close()
+
     # ---------- kv ----------
     def has(self, k: str) -> bool:
         with self._lock:

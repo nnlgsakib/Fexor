@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Fexor Kiosk</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #8b949e;
+    --accent: #3fb6a8; --ok: #2ea043; --bad: #d1453b; --warn: #d29922;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px;
+    border-bottom: 1px solid var(--line); font-size: 18px; }
+  header b { font-weight: 600; }
+  .clock { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; }
+  main { width: min(760px, 92vw); margin: 40px auto; display: grid; gap: 18px; }
+  h1 { margin: 0; font-size: 32px; }
+  p { margin: 0; color: var(--muted); font-size: 17px; line-height: 1.45; }
+  .list { display: grid; gap: 12px; }
+  .item { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px;
+    display: flex; align-items: center; gap: 16px; }
+  .item .info { flex: 1; min-width: 0; display: grid; gap: 4px; }
+  .item .name { font-size: 20px; font-weight: 650; }
+  .item .meta { color: var(--muted); font-size: 15px; overflow-wrap: anywhere; }
+  .item .new { color: var(--warn); }
+  button { font: inherit; font-weight: 650; border-radius: 12px; border: 0; cursor: pointer;
+    background: var(--accent); color: #04211d; font-size: 17px; padding: 12px 22px; }
+  button.big { font-size: 22px; padding: 16px 30px; border-radius: 16px; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  button.danger { background: transparent; color: var(--bad); border: 1px solid var(--line); }
+  button:active { transform: scale(.98); }
+  button:disabled { opacity: .5; cursor: default; }
+  .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+  .empty { color: var(--muted); padding: 24px; border: 1px dashed var(--line); border-radius: 16px;
+    text-align: center; }
+  .busy { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: grid; place-items: center;
+    font-size: 26px; font-weight: 650; }
+  .hidden { display: none !important; }
+  .err { color: var(--bad); min-height: 1.2em; }
+</style>
+</head>
+<body>
+<header><b>Fexor Kiosk</b><span class="clock" id="clock">--:--</span></header>
+<main>
+  <h1>Choose a session</h1>
+  <p>A session is this kiosk's connection to one server and space. Open a saved one, or start a
+    new one to connect to another server or space.</p>
+  <div class="list" id="list"></div>
+  <div class="err" id="err"></div>
+  <div class="actions">
+    <button class="big" id="newBtn">New session</button>
+    <button class="big ghost" id="exitBtn">Exit app</button>
+  </div>
+</main>
+<div class="busy hidden" id="busy">Opening…</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+setInterval(tick, 1000); tick();
+function tick() { $("clock").textContent = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+
+function ago(seconds) {
+  const m = Math.round(seconds / 60), h = Math.round(seconds / 3600), d = Math.round(seconds / 86400);
+  if (m < 2) return "just now";
+  if (m < 60) return `${m} minutes ago`;
+  if (h < 36) return `${h} hours ago`;
+  return `${d} days ago`;
+}
+
+async function call(method, path) {
+  const r = await fetch(path, {method});
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || "Something went wrong");
+  return body;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+async function load() {
+  const {sessions, now} = await call("GET", "/api/sessions");
+  const list = $("list");
+  list.innerHTML = "";
+  if (!sessions.length) list.append(el("div", "empty", "No saved sessions yet. Start a new one to connect this kiosk."));
+  for (const s of sessions) {
+    const item = el("div", "item");
+    const info = el("div", "info");
+    info.append(el("div", "name", s.space || "Not connected yet"));
+    if (s.paired) {
+      info.append(el("div", "meta", `Kiosk: ${s.kiosk || "–"}`));
+      info.append(el("div", "meta", `Server: ${s.server || "–"}`));
+    } else {
+      info.append(el("div", "meta new", "Setup was started but not finished."));
+    }
+    info.append(el("div", "meta", `Last used ${ago(now - s.last_used)}`));
+    const open = el("button", "", s.paired ? "Open" : "Continue setup");
+    open.onclick = () => go("POST", `/api/sessions/${s.id}/open`, s.space || "setup");
+    const del = el("button", "danger", "Delete");
+    del.onclick = () => remove(s);
+    item.append(info, open, del);
+    list.append(item);
+  }
+}
+
+async function go(method, path, what) {
+  $("err").textContent = "";
+  $("busy").textContent = what === "setup" ? "Starting setup…" : `Opening ${what}…`;
+  $("busy").classList.remove("hidden");
+  try { await call(method, path); } catch (e) {
+    $("busy").classList.add("hidden"); $("err").textContent = e.message; return;
+  }
+  // The kiosk replaces this list on the same address; reload once it answers.
+  for (let i = 0; i < 300; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    try {
+      const s = await (await fetch("/api/status")).json();
+      if (s.mode !== "sessions") { location.reload(); return; }
+    } catch { /* switching */ }
+  }
+  location.reload();
+}
+
+async function remove(s) {
+  const name = s.space || "this unfinished setup";
+  if (!confirm(`Delete the session for ${name}? This kiosk forgets the connection and any check-ins it hasn't uploaded yet. The server keeps everything it already has.`)) return;
+  try { await call("DELETE", `/api/sessions/${s.id}`); await load(); } catch (e) { $("err").textContent = e.message; }
+}
+
+$("newBtn").onclick = () => go("POST", "/api/sessions", "setup");
+$("exitBtn").onclick = async () => {
+  try { await call("POST", "/api/quit"); } catch (e) { $("err").textContent = e.message; }
+};
+load().catch((e) => { $("err").textContent = e.message; });
+</script>
+</body>
+</html>

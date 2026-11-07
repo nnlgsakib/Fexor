@@ -40,6 +40,8 @@ services:
     depends_on: [server]
     environment: *env
     command: ["fexor-server", "worker"]
+    healthcheck:
+      disable: true  # the image's check is for the web server; the worker serves no HTTP
 
   caddy:
     image: caddy:2-alpine

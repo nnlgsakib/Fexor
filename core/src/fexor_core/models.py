@@ -87,6 +87,9 @@ def ensure_model(name: str, model_dir: Path | None = None) -> Path:
         digest = _sha256(tmp)
         if digest != spec.sha256:
             raise RuntimeError(f"checksum mismatch for {name}: {digest}")
+        # mkstemp makes the file owner-only (0600). Models are public files that a service user
+        # other than the downloader must read (Docker image, Linux packages), so open it up.
+        tmp.chmod(0o644)
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)

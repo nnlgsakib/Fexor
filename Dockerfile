@@ -22,7 +22,7 @@ RUN mkdir -p core/src/fexor_core server/src/fexor_server kiosk/src/fexor_kiosk &
 COPY core core
 COPY server server
 RUN uv sync --frozen --no-dev --package fexor-server && \
-    fexor-server models
+    fexor-server models &&     chmod -R a+rX /opt/models
 COPY --from=web /web/dist /opt/web
 RUN useradd --system --uid 10001 fexor
 USER fexor

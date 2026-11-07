@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -164,3 +165,21 @@ def test_settings_token_scoped_to_device_and_time():
         qr.verify_settings(person, pubs, "dev-1", 0)
     with pytest.raises(qr.InvalidToken):
         qr.verify(tok, pubs)
+
+
+def test_downloaded_models_are_readable_by_other_users(tmp_path, monkeypatch):
+    import stat
+    import sys
+
+    from fexor_core import models
+
+    if sys.platform == "win32":
+        pytest.skip("POSIX permissions")
+    data = b"model-bytes"
+    spec = models.ModelSpec("m.onnx", "https://example.invalid/m.onnx",
+                            __import__("hashlib").sha256(data).hexdigest(), "MIT")
+    monkeypatch.setitem(models.MODELS, "tiny", spec)
+    monkeypatch.setattr(models.urllib.request, "urlretrieve",
+                        lambda url, dest: Path(dest).write_bytes(data))
+    path = models.ensure_model("tiny", tmp_path)
+    assert path.stat().st_mode & stat.S_IROTH

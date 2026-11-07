@@ -226,7 +226,7 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
         async def reader():
             while True:
                 msg = json.loads(await sock.receive_text())
-                if msg.get("cmd") in ("start", "cancel", "review", "close_settings"):
+                if msg.get("cmd") in ("start", "cancel", "review", "dismiss", "close_settings"):
                     verifier.command(msg["cmd"])
                     if msg["cmd"] == "review":
                         syncer.poke()

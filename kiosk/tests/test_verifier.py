@@ -508,3 +508,14 @@ def test_desktop_data_dir_per_platform(monkeypatch, tmp_path):
     monkeypatch.delenv("FEXOR_KIOSK_DATA")
     assert desktop.app_data_dir().name == "Fexor Kiosk"
     assert desktop.bundled_models() is None  # not packaged
+
+
+def test_dismiss_closes_result_at_once(kiosk):
+    v, pipe, store = kiosk
+    start(v, pipe, token())
+    t = run(v)
+    assert v.state == "result"
+    pipe.qr_text = None
+    v.command("dismiss")
+    v.step(FRAME, t + 0.1)
+    assert v.state == "idle"

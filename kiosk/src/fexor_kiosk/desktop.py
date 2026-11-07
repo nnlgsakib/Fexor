@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 APP_NAME = "Fexor Kiosk"
-PORT = 8300
+PORT = int(os.environ.get("FEXOR_KIOSK_PORT", "8300"))  # change only to run a second copy
 URL = f"http://127.0.0.1:{PORT}/"
 log = logging.getLogger("fexor.desktop")
 

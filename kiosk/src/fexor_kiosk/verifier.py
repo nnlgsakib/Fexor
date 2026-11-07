@@ -231,7 +231,7 @@ class Verifier:
         if self.state == "result":
             if cmd == "review":
                 self._request_review(now)
-            if cmd == "start" or now >= self.result_until:
+            if cmd in ("start", "dismiss") or now >= self.result_until:
                 self._to_idle()
                 if cmd != "start":
                     return

@@ -104,6 +104,17 @@
   .card .why { font-size: 22px; color: var(--muted); max-width: 520px; }
   footer { padding: 10px 24px; color: var(--muted); font-size: 14px; display: flex; gap: 18px;
     border-top: 1px solid var(--line); }
+  .menubtn { font-size: 16px; padding: 8px 16px; min-width: 0; border-radius: 10px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .sheet { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.7);
+    backdrop-filter: blur(4px); z-index: 10; }
+  .sheet .card { border-top-color: var(--accent); gap: 16px; padding: 32px 40px; }
+  .sheet h2 { margin: 0; font-size: 26px; }
+  .sheet .actions { display: grid; gap: 12px; width: min(420px, 80vw); }
+  .sheet .actions button { width: 100%; }
+  .sheet img { width: min(420px, 80vw); aspect-ratio: 4 / 3; object-fit: cover; border-radius: 14px;
+    transform: scaleX(-1); background: #000; }
+  .sheet p { margin: 0; color: var(--muted); font-size: 18px; max-width: 460px; line-height: 1.4; }
   @media (max-width: 900px) {
     body.manage main { flex-direction: column; align-items: center; }
     body.manage .stage { position: static; width: 92vw; }
@@ -118,6 +129,7 @@
   <span class="pill dev hidden" id="devpill">Test mode</span>
   <span class="spacer"></span>
   <span class="clock" id="clock">--:--</span>
+  <button class="ghost menubtn hidden" id="menuBtn" aria-label="Kiosk menu">Menu</button>
 </header>
 
 <main>
@@ -140,7 +152,10 @@
 
   <!-- First-time setup -->
   <section class="panel hidden" id="setupPanel">
-    <h1>Set up this kiosk</h1>
+    <div class="topbar">
+      <h1>Set up this kiosk</h1>
+      <button class="ghost menubtn quit hidden" id="quitSetupTop">Exit app</button>
+    </div>
     <div class="box">
       <h2><span class="n">1</span>Choose the camera</h2>
       <p>Pick the picture that shows the person standing at the kiosk.</p>
@@ -175,7 +190,10 @@
 
   <!-- Settings, opened with an admin settings QR -->
   <section class="panel hidden" id="settingsPanel">
-    <h1>Kiosk settings</h1>
+    <div class="topbar">
+      <h1>Kiosk settings</h1>
+      <button class="ghost menubtn" id="backSettings">Back to kiosk</button>
+    </div>
     <p id="settingsTimer"></p>
     <div class="box">
       <h2>Connection</h2>
@@ -219,6 +237,24 @@
     <div class="time" id="rtime"></div>
     <div class="why" id="rwhy"></div>
     <button id="review" class="ghost hidden">Ask admin to review</button>
+    <button id="dismiss">Done</button>
+  </div>
+</div>
+
+<div class="sheet hidden" id="menu" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+  <div class="card">
+    <h2 id="menuTitle">Kiosk menu</h2>
+    <div class="actions" id="menuActions">
+      <button id="menuSettings">Settings</button>
+      <button class="ghost quit hidden" id="menuExit">Exit app</button>
+      <button class="ghost" id="menuBack">Back</button>
+    </div>
+    <div class="actions hidden" id="menuUnlock">
+      <p id="menuUnlockText">In the admin panel, open <b>Kiosks</b> and click <b>Settings QR</b> next to this
+        kiosk. Hold that QR code up to this camera.</p>
+      <img id="menuVideo" alt="Camera">
+      <button class="ghost" id="menuUnlockBack">Back</button>
+    </div>
   </div>
 </div>
 
@@ -228,6 +264,7 @@ const OK_ICON = '<circle cx="12" cy="12" r="10" stroke="#2ea043"/><path d="M7 12
 const BAD_ICON = '<circle cx="12" cy="12" r="10" stroke="#d1453b"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" stroke="#d1453b"/>';
 const CAMERA_SLOTS = 6;
 let ws, view = {}, lastUrl, dev = false, manageMode = "", canQuit = false;
+let menuAction = null;  // "settings" | "exit" while waiting for the admin's Settings QR
 
 function tick() {
   $("clock").textContent = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
@@ -239,6 +276,44 @@ $("start").onclick = () => send("start");
 $("cancel").onclick = () => send("cancel");
 $("review").onclick = () => send("review");
 $("closeSettings").onclick = () => send("close_settings");
+$("backSettings").onclick = () => send("close_settings");
+$("dismiss").onclick = () => send("dismiss");
+$("quitSetupTop").onclick = () => quitApp();
+
+// ---------- menu: settings and exit need the admin's Settings QR once the kiosk is paired ----------
+function openMenu() {
+  menuAction = null;
+  $("menuActions").classList.remove("hidden");
+  $("menuUnlock").classList.add("hidden");
+  $("menu").classList.remove("hidden");
+}
+function closeMenu() {
+  menuAction = null;
+  $("menu").classList.add("hidden");
+}
+function chooseMenu(action) {
+  if (view.state === "settings") {  // already unlocked
+    closeMenu();
+    if (action === "exit") quitApp();
+    return;
+  }
+  menuAction = action;
+  $("menuTitle").textContent = action === "exit" ? "Exit app" : "Open settings";
+  $("menuActions").classList.add("hidden");
+  $("menuUnlock").classList.remove("hidden");
+}
+$("menuBtn").onclick = openMenu;
+$("menuBack").onclick = closeMenu;
+$("menuUnlockBack").onclick = () => { $("menuTitle").textContent = "Kiosk menu"; openMenu(); };
+$("menuSettings").onclick = () => chooseMenu("settings");
+$("menuExit").onclick = () => chooseMenu("exit");
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("menu").classList.contains("hidden")) closeMenu();
+  else if (view.state === "settings") send("close_settings");
+  else if (view.state === "result") send("dismiss");
+  else if (view.state === "scan_qr" || view.state === "face") send("cancel");
+});
 
 async function post(path, body) {
   const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
@@ -318,8 +393,8 @@ $("setupForm").onsubmit = async (e) => {
   } catch (err) { st.className = "status error"; st.textContent = err.message; }
 };
 
-async function quitApp() {
-  if (!confirm("Close the kiosk app? People can't check in until it is started again.")) return;
+async function quitApp(confirmed = false) {
+  if (!confirmed && !confirm("Close the kiosk app? People can't check in until it is started again.")) return;
   try { await post("/api/settings/quit"); } catch (e) { alert(e.message); }
 }
 $("quitSettings").onclick = quitApp;
@@ -362,7 +437,16 @@ function renderManage(v) {
 }
 
 function render(v) {
+  const prev = view.state;
   view = v;
+  // Menu: a scanned Settings QR finishes the chosen action; a person starting a check closes it.
+  if (menuAction && v.state === "settings" && prev !== "settings") {
+    const action = menuAction;
+    closeMenu();
+    if (action === "exit") quitApp(true);
+  }
+  if (!$("menu").classList.contains("hidden") && (v.state === "face" || v.state === "setup")) closeMenu();
+  $("menuBtn").classList.toggle("hidden", v.state === "setup" || v.state === "settings");
   $("space").textContent = v.state === "setup" ? "New kiosk" : (v.space || "Attendance");
   $("netpill").classList.toggle("hidden", v.state === "setup");
   $("netdot").className = "dot " + (v.online ? "on" : "off");
@@ -411,6 +495,7 @@ function connect() {
     if (typeof e.data === "string") { render(JSON.parse(e.data)); return; }
     const url = URL.createObjectURL(e.data);
     $("video").src = url;
+    if (menuAction) $("menuVideo").src = url;
     if (lastUrl) URL.revokeObjectURL(lastUrl);
     lastUrl = url;
   };

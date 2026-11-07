@@ -98,6 +98,11 @@ in the background and starts again with Docker. **Stop Server (Windows).cmd** (M
 `./deploy/stop-server.sh`) stops it completely, also any development server; your data stays, and
 it remains stopped until you start it again.
 
+To delete a server completely and start over, run **Reset Server (Windows).cmd** (Mac/Linux:
+`./deploy/reset-server.sh`). It shows the server folder and everything it will delete (database,
+`deploy/.env` with its keys, old development data) and only goes ahead after you type `DELETE`.
+There is no undo.
+
 ### 2. Set up a space
 
 Open a space and follow **Get this space ready** on its overview: add people (or import a

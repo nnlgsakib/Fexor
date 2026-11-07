@@ -12,12 +12,15 @@ function Pause-Window {
 Write-Host "Stopping the Fexor server..." -ForegroundColor Cyan
 
 # 1. Docker containers. Found by their Compose project, so this works even without deploy\.env.
-$project = "deploy"
+# Docker Compose project of THIS folder, worked out the way Compose does it: COMPOSE_PROJECT_NAME
+# if set, else the folder name. Never assume "deploy": a copy in another folder is another server.
 $envFile = Join-Path $deploy ".env"
-if (Test-Path $envFile) {
+$project = $env:COMPOSE_PROJECT_NAME
+if (-not $project -and (Test-Path $envFile)) {
     $line = Get-Content $envFile | Where-Object { $_ -like "COMPOSE_PROJECT_NAME=*" } | Select-Object -First 1
     if ($line) { $project = ($line -replace "^COMPOSE_PROJECT_NAME=", "").Trim() }
 }
+if (-not $project) { $project = (Split-Path -Leaf $deploy).ToLower() -replace "[^a-z0-9_-]", "" }
 if (Get-Command docker -ErrorAction SilentlyContinue) {
     & docker info 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {

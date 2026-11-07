@@ -377,7 +377,11 @@ async function loadCameras(gridId, statusId) {
         if (!r.ok) throw 0;
         const url = URL.createObjectURL(await r.blob());
         cells[i].querySelector(".ph").outerHTML = `<img src="${url}" alt="Camera ${i + 1}">`;
-      } catch { cells[i].remove(); }
+      } catch {
+        // Keep the camera in use even if its picture is slow; drop cameras that give none.
+        if (String(i) === view.camera) cells[i].querySelector(".ph").textContent = "Starting…";
+        else cells[i].remove();
+      }
     }
     if (!grid.children.length) grid.innerHTML = "<p>No cameras found. Plug in a USB camera, or use a phone camera below.</p>";
   }
@@ -385,7 +389,11 @@ async function loadCameras(gridId, statusId) {
 }
 
 function markCamera() {
-  document.querySelectorAll(".cam").forEach((b) => b.classList.toggle("on", b.dataset.src === view.camera));
+  document.querySelectorAll(".cam").forEach((b) => {
+    const inUse = b.dataset.src === view.camera;
+    b.classList.toggle("on", inUse);
+    b.querySelector("span").textContent = `Camera ${Number(b.dataset.src) + 1}${inUse ? " (in use)" : ""}`;
+  });
 }
 
 async function chooseCamera(src, statusId) {

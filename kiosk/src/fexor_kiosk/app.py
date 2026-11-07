@@ -150,7 +150,8 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
             raise HTTPException(404, "no such camera")
         data = None
         if camera.source == index:  # already open: reuse the live frame
-            _, frame = await asyncio.to_thread(camera.latest, -1, 2.0)
+            # seq > 0: wait for its first picture; right after start-up there may be none yet
+            _, frame = await asyncio.to_thread(camera.latest, 0, 5.0)
             if frame is not None:
                 ok, jpg = cv2.imencode(".jpg", cv2.resize(frame, (240, 180)))
                 data = jpg.tobytes() if ok else None

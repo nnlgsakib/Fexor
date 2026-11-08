@@ -83,11 +83,15 @@ class RealPipeline:
         self._spoof = AntiSpoof(model_dir)
         self._mesh = FaceMesh(model_dir)
         self._assess = assess
-        self._qr = cv2.QRCodeDetector()
+        # The classic reader misses ~3% of clean codes (depends on the data); the Aruco-based one
+        # reads those. Alternate per frame: both get a chance, each frame costs one decode.
+        self._qr = [cv2.QRCodeDetector(), cv2.QRCodeDetectorAruco()]
+        self._qr_turn = 0
 
     def decode_qr(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        text, _, _ = self._qr.detectAndDecode(gray)
+        self._qr_turn ^= 1
+        text, _, _ = self._qr[self._qr_turn].detectAndDecode(gray)
         return text or None
 
     def detect(self, frame):

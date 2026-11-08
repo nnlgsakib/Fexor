@@ -37,8 +37,12 @@ def decode_qr_image(data: bytes) -> str | None:
     scale = 1280 / max(img.shape[:2])
     if scale < 1:
         img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-    text, _, _ = cv2.QRCodeDetector().detectAndDecode(img)
-    return text or None
+    # Two readers: each misses some codes the other reads (see RealPipeline.decode_qr).
+    for reader in (cv2.QRCodeDetector(), cv2.QRCodeDetectorAruco()):
+        text, _, _ = reader.detectAndDecode(img)
+        if text:
+            return text
+    return None
 
 
 class SetupIn(BaseModel):

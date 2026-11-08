@@ -382,7 +382,8 @@ def test_dev_qr_upload_feeds_the_normal_check(tmp_path, monkeypatch):
 
     # Upload is only a different input: forged tokens are still rejected.
     forged = token(key=Ed25519PrivateKey.generate())
-    client.post("/api/dev/qr", content=_qr_png(forged), headers={"content-type": "image/png"})
+    r = client.post("/api/dev/qr", content=_qr_png(forged), headers={"content-type": "image/png"})
+    assert r.status_code == 200, r.text
     v.step(None, 1_000_001.0)
     assert v.state == "result" and not v.view["ok"]
     assert store.pending()[-1]["reason"].startswith("qr_invalid")
@@ -607,3 +608,16 @@ def test_session_list_button_needs_unlock(tmp_path):
     unpaired = TestClient(create_app(Store(tmp_path / "c"), _NoCamera(), pipeline=FakePipe(),
                                      on_switch=lambda: switches.append(2)))
     assert unpaired.post("/api/settings/switch").status_code == 200  # setup screen: always allowed
+
+
+def test_qr_image_decode_reads_every_card():
+    # OpenCV's classic reader alone misses a few percent of clean codes, depending on the data.
+    from fexor_kiosk.app import decode_qr_image
+
+    missed = []
+    for i in range(150):
+        key = Ed25519PrivateKey.from_private_bytes(i.to_bytes(32, "big"))
+        tok = token(key=key)
+        if decode_qr_image(_qr_png(tok)) != tok:
+            missed.append(i)
+    assert not missed, f"QR not read for keys {missed}"

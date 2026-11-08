@@ -100,6 +100,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          # Only our files: docker/build-push-action also uploads a .dockerbuild record that
+          # download-artifact cannot extract.
+          pattern: "{kiosk-*,server-bundle}"
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:

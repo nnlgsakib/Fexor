@@ -7,6 +7,40 @@ from a web panel.
 
 **New here? Follow the [setup manual](docs/SETUP.md)**: one computer, a few commands, about 20 minutes.
 
+## Install
+
+No source code needed: the server and the kiosk app come ready-made from the
+[latest release](https://github.com/nnlgsakib/Fexor/releases/latest).
+
+**Server (admin panel).** On the computer or cloud server that will hold the data, run one line:
+
+| System | Run this |
+| --- | --- |
+| Windows (in PowerShell) | `irm https://github.com/nnlgsakib/Fexor/releases/latest/download/install-server.ps1 \| iex` |
+| Linux, Mac, Raspberry Pi | `curl -fsSL https://github.com/nnlgsakib/Fexor/releases/latest/download/install-server.sh \| sh` |
+
+It installs to `%USERPROFILE%\Fexor Server` (Windows) or `~/fexor-server` (Linux/Mac), installs
+Docker if it is missing, and starts the server. Your browser then opens **Welcome to Fexor**:
+create the admin account there. On Windows it also puts **Fexor - Start Server** and **Fexor - Stop
+Server** on the desktop.
+
+- **New Docker install on Windows:** restart if asked, open Docker Desktop once, then double-click
+  **Fexor - Start Server**.
+- **Update:** run the same line again. Settings and keys (`deploy/.env`) are kept.
+- **No internet for scripts?** Download `fexor-server.zip` from the release, unzip it and
+  double-click **Start Server (Windows).cmd** (Mac/Linux: `./deploy/start-server.sh`).
+
+**Kiosk (verification app).** On each kiosk computer, download and install the app from the
+release. Then open it, click **New session** and show the pairing QR from the admin panel
+(**Kiosks, Add kiosk**). Details: [Set up a kiosk](#3-set-up-a-kiosk-with-the-desktop-app).
+
+| Kiosk computer | File |
+| --- | --- |
+| Windows 10/11 | `FexorKiosk-Setup-<version>-windows-x64.exe` |
+| Raspberry Pi 5 (64-bit Raspberry Pi OS) | `fexor-kiosk_<version>_arm64.deb` |
+| Linux PC (Debian, Ubuntu) | `fexor-kiosk_<version>_amd64.deb` |
+| Mac (Apple silicon) | `FexorKiosk-<version>-macos-arm64.dmg` |
+
 ```
 [Admin browser] --HTTPS--> [Caddy] --> [Fexor server (FastAPI)] --> [PostgreSQL]
                                              |   [worker: absences, recalculation, webhooks]
@@ -74,15 +108,8 @@ camera (not built in yet).
 
 ### 1. Start the server
 
-On the computer or cloud server that will hold the data, run one line. It downloads the server
-(compiled, no source code), installs Docker if needed and starts it. Run it again to update.
-
-- Windows (PowerShell):
-  `irm https://github.com/nnlgsakib/Fexor/releases/latest/download/install-server.ps1 | iex`
-- Linux / Mac:
-  `curl -fsSL https://github.com/nnlgsakib/Fexor/releases/latest/download/install-server.sh | sh`
-
-Or by hand, from a copy of this repository or the release's `fexor-server.zip`:
+Quickest: the one-line installer under [Install](#install). Or by hand, from the release's
+`fexor-server.zip` (or a copy of this repository):
 
 1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine on
    a Linux server) and open it once.
@@ -128,7 +155,8 @@ On the kiosk computer, download the installer from the
 | Linux PC (Debian, Ubuntu) | `fexor-kiosk_<version>_amd64.deb` | As above |
 | Mac (Apple silicon) | `FexorKiosk-<version>-macos-arm64.dmg` | Drag **Fexor Kiosk** to Applications. The first time, right-click it and choose **Open**. |
 
-The app opens full screen on **Set up this kiosk**:
+The app opens on **Choose a session**: a list of servers this kiosk was connected to before.
+Click **Open** to use one again, or **New session** to connect to a server:
 
 1. Pick the camera from the preview pictures, or type a phone camera address (DroidCam).
 2. In the admin panel, go to **Kiosks → Add kiosk**. Hold the QR code it shows in front of the

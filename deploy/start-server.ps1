@@ -133,6 +133,8 @@ function Start-Stack {
     Write-Host "Starting... the first time this takes a few minutes." -ForegroundColor Cyan
     if ((Compose-Quiet pull server) -eq 0) {
         $rc = Compose up -d
+    } elseif (-not (Test-Path (Join-Path $deploy "..\Dockerfile"))) {
+        Fail "Could not download the Fexor server. Check this computer's internet connection and try again."
     } else {
         Write-Host "No ready-made server image to download; building it on this computer instead."
         $rc = Compose up -d --build

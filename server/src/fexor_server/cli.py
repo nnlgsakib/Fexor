@@ -13,6 +13,8 @@ def _alembic_cfg():
 
     cfg = Config()
     cfg.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
+    # The server image ships compiled migrations only (no .py source): load .pyc files too.
+    cfg.set_main_option("sourceless", "true")
     return cfg
 
 

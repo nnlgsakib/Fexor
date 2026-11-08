@@ -62,6 +62,9 @@ url=$(grep '^FEXOR_PUBLIC_URL=' .env | cut -d= -f2-)
 say "Starting... the first time this takes a few minutes."
 if docker compose --env-file .env pull server; then
   docker compose --env-file .env up -d
+elif [ ! -f ../Dockerfile ]; then
+  echo "Could not download the Fexor server. Check this computer's internet connection and try again." >&2
+  exit 1
 else
   echo "No ready-made server image available; building it here instead."
   docker compose --env-file .env up -d --build

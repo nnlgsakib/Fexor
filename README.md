@@ -201,10 +201,19 @@ git tag v0.2.0 && git push origin v0.2.0
 ```
 
 GitHub Actions then publishes the server image `ghcr.io/nnlgsakib/fexor-server` (PC and ARM
-servers) and attaches the kiosk installers (Windows, macOS, Linux, Raspberry Pi) to a release.
+servers) and attaches these files to a release:
+
+- `fexor-server-<version>.zip`: the server download for customers. Start/Stop/Reset launchers,
+  the compose file and a short README. No source code.
+- Kiosk installers (Windows, macOS, Linux, Raspberry Pi).
+
 After the first run, open the package on GitHub (**Packages**, **fexor-server**, **Package
 settings**) and make it **Public** so servers can download it without signing in. To build a kiosk
 installer locally: `uv sync --extra desktop --group build && uv run python packaging/build.py`.
+
+**What customers get:** the server image and the kiosk app contain compiled Python only (`.pyc`),
+not the `.py` source. The admin panel is minified JavaScript, as on any website. Give customers the
+server zip and the kiosk installers, never this repository.
 
 ## Security
 

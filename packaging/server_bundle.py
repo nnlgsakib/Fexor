@@ -1,7 +1,8 @@
 """Make the server download for customers: launchers, deploy scripts and compose file. No source code.
 
 The server itself comes from the published image (ghcr.io/nnlgsakib/fexor-server), which holds
-compiled code only. Output: packaging/dist/fexor-server-<version>.zip
+compiled code only. Output: packaging/dist/fexor-server.zip (fixed name, so the installers'
+".../releases/latest/download/fexor-server.zip" always gets the newest one)
 
     python packaging/server_bundle.py          (version from FEXOR_VERSION, else "dev")
 """
@@ -29,8 +30,8 @@ FILES = [
     "deploy/reset-server.sh",
 ]
 
-README = """Fexor server
-============
+README = """Fexor server {version}
+====================
 
 1. Install Docker Desktop (https://www.docker.com/products/docker-desktop/) and open it once.
    On a Linux server, install Docker Engine instead.
@@ -52,9 +53,9 @@ Kiosks: install the Fexor Kiosk app on each verification computer, open it, choo
 
 
 def main() -> None:
-    out = ROOT / "packaging" / "dist" / f"fexor-server-{VERSION}.zip"
+    out = ROOT / "packaging" / "dist" / "fexor-server.zip"
     out.parent.mkdir(parents=True, exist_ok=True)
-    top = f"fexor-server-{VERSION}"
+    top = "fexor-server"
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for name in FILES:
             data = (ROOT / name).read_bytes()
@@ -69,7 +70,7 @@ def main() -> None:
             z.writestr(info, data)
         info = zipfile.ZipInfo(f"{top}/README.txt", date_time=(2020, 1, 1, 0, 0, 0))
         info.external_attr = 0o644 << 16
-        z.writestr(info, README.replace("\n", "\r\n"), zipfile.ZIP_DEFLATED)
+        z.writestr(info, README.format(version=VERSION).replace("\n", "\r\n"), zipfile.ZIP_DEFLATED)
     print(out)
 
 

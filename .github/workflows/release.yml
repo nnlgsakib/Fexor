@@ -80,18 +80,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 packaging/server_bundle.py
+      - run: |
+          python3 packaging/server_bundle.py
+          cp packaging/install-server.ps1 packaging/install-server.sh packaging/dist/
         env:
           FEXOR_VERSION: ${{ env.VERSION }}
       - uses: actions/upload-artifact@v4
         with:
           name: server-bundle
           if-no-files-found: error
-          path: packaging/dist/*.zip
+          path: packaging/dist/*
 
   release:
     needs: [server-image, kiosk, server-bundle]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A failed kiosk build (one OS) must not hold back the server release.
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.server-image.result == 'success' && needs.server-bundle.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

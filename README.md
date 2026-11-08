@@ -74,7 +74,15 @@ camera (not built in yet).
 
 ### 1. Start the server
 
-On the computer or cloud server that will hold the data:
+On the computer or cloud server that will hold the data, run one line. It downloads the server
+(compiled, no source code), installs Docker if needed and starts it. Run it again to update.
+
+- Windows (PowerShell):
+  `irm https://github.com/nnlgsakib/Fexor/releases/latest/download/install-server.ps1 | iex`
+- Linux / Mac:
+  `curl -fsSL https://github.com/nnlgsakib/Fexor/releases/latest/download/install-server.sh | sh`
+
+Or by hand, from a copy of this repository or the release's `fexor-server.zip`:
 
 1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine on
    a Linux server) and open it once.
@@ -203,8 +211,9 @@ git tag v0.2.0 && git push origin v0.2.0
 GitHub Actions then publishes the server image `ghcr.io/nnlgsakib/fexor-server` (PC and ARM
 servers) and attaches these files to a release:
 
-- `fexor-server-<version>.zip`: the server download for customers. Start/Stop/Reset launchers,
-  the compose file and a short README. No source code.
+- `fexor-server.zip`: the server download for customers. Start/Stop/Reset launchers, the
+  compose file and a short README. No source code.
+- `install-server.ps1` / `install-server.sh`: the one-line installers, which fetch that zip.
 - Kiosk installers (Windows, macOS, Linux, Raspberry Pi).
 
 After the first run, open the package on GitHub (**Packages**, **fexor-server**, **Package

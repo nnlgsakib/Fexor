@@ -83,10 +83,11 @@ export interface AttendanceEvent {
   status: "accepted" | "rejected" | "pending";
   source: "kiosk" | "admin";
   reason: string;
-  scores: Record<string, number | string>;
+  scores: Record<string, number | string | boolean | null>;
   note: string;
   has_snapshot: boolean;
   reviewed_by: string | null;
+  reviewed_at?: string | null;
 }
 
 export interface DayRow {

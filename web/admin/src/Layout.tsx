@@ -3,17 +3,17 @@ import { useDisclosure } from "@mantine/hooks";
 import {
   IconCalendarTime, IconChecklist, IconDeviceDesktop, IconGauge, IconKey, IconListDetails,
   IconLogout, IconPlugConnected, IconSettings, IconShieldLock, IconUserCircle, IconUsers, IconUsersGroup,
-  IconLayoutGrid,
+  IconLayoutGrid, IconTable,
 } from "@tabler/icons-react";
 import { NavLink as RouterLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
 import { useMe } from "./auth";
 
 const SPACE_NAV = [
   { to: "", label: "Overview", icon: IconGauge },
-  { to: "register", label: "Register", icon: IconCalendarTime },
+  { to: "register", label: "Register", icon: IconTable },
   { to: "people", label: "People", icon: IconUsers },
   { to: "activity", label: "Check-ins", icon: IconListDetails },
-  { to: "review", label: "Review queue", icon: IconChecklist },
+  { to: "review", label: "Review queue", icon: IconChecklist, manage: true },
   { to: "schedule", label: "Schedule & holidays", icon: IconCalendarTime },
   { to: "devices", label: "Kiosks", icon: IconDeviceDesktop },
   { to: "settings", label: "Settings", icon: IconSettings },
@@ -25,6 +25,8 @@ export function Layout() {
   const { spaceId } = useParams();
   const nav = useNavigate();
   const loc = useLocation();
+  const role = me.is_superadmin ? "owner" : me.spaces.find((s) => s.id === spaceId)?.role;
+  const canManage = role === "owner" || role === "manager";
 
   const link = (to: string, label: string, Icon: typeof IconGauge, end = false) => (
     <NavLink key={to} component={RouterLink} to={to} end={end} label={label} onClick={close}
@@ -65,7 +67,7 @@ export function Layout() {
         <AppShell.Section grow component={ScrollArea} mt="xs">
           {spaceId && (
             <Stack gap={2}>
-              {SPACE_NAV.map((n) => link(`/spaces/${spaceId}${n.to ? `/${n.to}` : ""}`, n.label, n.icon, n.to === ""))}
+              {SPACE_NAV.filter((n) => !n.manage || canManage).map((n) => link(`/spaces/${spaceId}${n.to ? `/${n.to}` : ""}`, n.label, n.icon, n.to === ""))}
             </Stack>
           )}
           <Divider my="sm" />
@@ -81,7 +83,7 @@ export function Layout() {
             <NavLink component={RouterLink} to="/account" label="Turn on two-step sign-in" c="orange.8"
               leftSection={<IconKey size={18} />} />
           )}
-          <NavLink label="Sign out" leftSection={<IconLogout size={18} stroke={1.6} />} onClick={logout} />
+          <NavLink component="button" label="Sign out" leftSection={<IconLogout size={18} stroke={1.6} />} onClick={logout} />
         </AppShell.Section>
       </AppShell.Navbar>
 
@@ -91,7 +93,8 @@ export function Layout() {
             Office network mode: connections are not encrypted. Use it only on a network you trust.
           </Alert>
         )}
-        <Outlet />
+        {/* Keyed by space: search boxes, selections and pages don't carry over to another space. */}
+        <Outlet key={spaceId ?? "org"} />
       </AppShell.Main>
     </AppShell>
   );

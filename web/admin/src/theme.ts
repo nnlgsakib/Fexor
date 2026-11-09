@@ -20,12 +20,13 @@ export const theme = createTheme({
 });
 
 // Stamp-ink colours for attendance states; used by the register grid and badges.
+// All have at least 4.5:1 contrast with the white letters printed on them.
 export const STATUS: Record<string, { color: string; label: string; short: string }> = {
   present: { color: "#2e7d4f", label: "Present", short: "P" },
-  late: { color: "#b7791f", label: "Late", short: "L" },
+  late: { color: "#8a5a00", label: "Late", short: "L" },
   half_day: { color: "#8c6a1c", label: "Half day", short: "H" },
   absent: { color: "#b3412f", label: "Absent", short: "A" },
   holiday: { color: "#4f63a6", label: "Holiday", short: "Ho" },
   leave: { color: "#6f5ba6", label: "Leave", short: "Lv" },
-  off: { color: "#8f9a95", label: "Worked day off", short: "O" },
+  off: { color: "#5f6a65", label: "Worked day off", short: "O" },
 };

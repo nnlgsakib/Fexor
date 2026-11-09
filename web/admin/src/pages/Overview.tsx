@@ -1,15 +1,15 @@
 import { BarChart } from "@mantine/charts";
-import { Anchor, Badge, Button, Group, Paper, SimpleGrid, Stack, Table, Text, ThemeIcon, Title } from "@mantine/core";
+import { Anchor, Button, Grid, Group, Modal, Paper, SimpleGrid, Stack, Table, Text, ThemeIcon, Title, UnstyledButton } from "@mantine/core";
 import { IconCheck } from "@tabler/icons-react";
 import { DateInput } from "@mantine/dates";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useState } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
 import { STATUS } from "../theme";
-import type { AttendanceEvent } from "../types";
-import { EVENT_COLORS, PageHeader, fmtTime, reasonText, today, useSpace } from "../ui";
+import type { AttendanceEvent, DayRow } from "../types";
+import { EventBadge, PageHeader, QueryState, dateIn, fmtDateTime, fmtMinutes, fmtTime, reasonText, useSpace } from "../ui";
 
 interface Dashboard {
   day: string;
@@ -68,54 +68,96 @@ function Checklist({ d, spaceId }: { d: Dashboard; spaceId: string }) {
   );
 }
 
-function Stat({ label, value, color, hint }: { label: string; value: number | string; color?: string; hint?: string }) {
-  return (
-    <Paper withBorder p="md">
+function Stat({ label, value, color, hint, onOpen }: {
+  label: string; value: number | string; color?: string; hint?: string; onOpen?: () => void;
+}) {
+  const body = (
+    <Paper withBorder p="md" h="100%">
       <Text size="sm" c="dimmed">{label}</Text>
       <div className="stat-value" style={{ color }}>{value}</div>
       {hint && <Text size="xs" c="dimmed" mt={2}>{hint}</Text>}
+      {onOpen && Number(value) > 0 && <Text size="xs" c="ledger.7" mt={2}>See who</Text>}
     </Paper>
+  );
+  return onOpen && Number(value) > 0
+    ? <UnstyledButton onClick={onOpen} aria-label={`${label}: see who`}>{body}</UnstyledButton> : body;
+}
+
+/** "Who was late / absent that day": the question admins ask most. */
+function WhoModal({ spaceId, day, status, tz, onClose }: { spaceId: string; day: string; status: string | null; tz?: string; onClose: () => void }) {
+  const q = useQuery({
+    queryKey: ["days", spaceId, "who", day, status],
+    queryFn: () => api<DayRow[]>(`/spaces/${spaceId}/days`, { query: { start: day, end: day, status } }),
+    enabled: !!status,
+  });
+  return (
+    <Modal opened={!!status} onClose={onClose} title={status ? `${STATUS[status]?.label ?? status} on ${dayjs(day).format("D MMM YYYY")}` : ""}>
+      <QueryState q={q}>
+        <Table verticalSpacing={6}>
+          <Table.Tbody>
+            {q.data?.map((r) => (
+              <Table.Tr key={r.member_id}>
+                <Table.Td>{r.member_name} <Text span c="dimmed" size="sm">{r.external_id}</Text></Table.Td>
+                <Table.Td ta="right">{status === "late" ? `${fmtTime(r.first_in, tz)}, ${fmtMinutes(r.late_minutes)} late` : ""}</Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+        {q.data?.length === 0 && <Text c="dimmed" size="sm">Nobody.</Text>}
+      </QueryState>
+    </Modal>
   );
 }
 
 export function Overview() {
-  const { spaceId, space } = useSpace();
-  const [day, setDay] = useState<string>(today());
+  const { spaceId, space, canManage, today, spaceQuery } = useSpace();
+  const [picked, setPicked] = useState<string | null>(null);
+  const [who, setWho] = useState<string | null>(null);
+  const day = picked ?? today;
   const q = useQuery({
     queryKey: ["dashboard", spaceId, day],
-    queryFn: () => api<Dashboard>(`/spaces/${spaceId}/dashboard`, { query: { day } }),
+    // No day for "today": the server uses today in the space's time zone.
+    queryFn: () => api<Dashboard>(`/spaces/${spaceId}/dashboard`, { query: { day: picked ?? undefined } }),
     refetchInterval: 10_000,
+    placeholderData: keepPreviousData,
   });
   const d = q.data;
   const tz = space?.timezone;
-  const isToday = day === today();
+  const isToday = day === today;
   const statuses = space?.mode === "single" ? ["present", "late", "absent", "leave"] : ["present", "late", "half_day", "absent", "leave"];
 
   return (
     <>
       <PageHeader
-        title={space?.name ?? ""}
+        title={space?.name ?? "Overview"}
         description={isToday ? "Today so far. Updates every few seconds." : `Attendance on ${dayjs(day).format("dddd, D MMMM YYYY")}`}
-        actions={<DateInput value={day} onChange={(v) => v && setDay(v)} maxDate={today()} valueFormat="D MMM YYYY" w={170} aria-label="Day" />}
+        actions={<DateInput value={day} onChange={(v) => setPicked(v && v !== today ? v : null)} maxDate={today} valueFormat="D MMM YYYY" w={170} aria-label="Day" />}
       />
+      {spaceQuery.isError ? <QueryState q={spaceQuery}>{null}</QueryState> : (
+      <QueryState q={q}>
       {d && (
         <Stack gap="lg">
-          <Checklist d={d} spaceId={spaceId} />
+          {canManage && <Checklist d={d} spaceId={spaceId} />}
           <SimpleGrid cols={{ base: 2, sm: 3, lg: 6 }}>
             <Stat label="Present" value={d.present} color={STATUS.present.color} hint={`of ${d.members} people`} />
-            <Stat label="Late" value={d.counts.late ?? 0} color={STATUS.late.color} />
-            <Stat label={isToday ? "Not checked in yet" : "Absent"} value={isToday ? d.not_checked_in : (d.counts.absent ?? 0)} color={STATUS.absent.color} />
+            <Stat label="Late" value={d.counts.late ?? 0} color={STATUS.late.color} onOpen={() => setWho("late")} />
+            {isToday
+              ? <Stat label="Not checked in yet" value={d.not_checked_in} color={STATUS.absent.color} />
+              : <Stat label="Absent" value={d.counts.absent ?? 0} color={STATUS.absent.color} onOpen={() => setWho("absent")} />}
             <Stat label="On leave or holiday" value={(d.counts.leave ?? 0) + (d.counts.holiday ?? 0)} color={STATUS.holiday.color} />
             <Stat label="Failed checks" value={d.failed_today} hint="that day" />
-            <Paper withBorder p="md" component={Link} to={`/spaces/${spaceId}/review`} style={{ textDecoration: "none", color: "inherit" }}>
-              <Text size="sm" c="dimmed">Waiting for review</Text>
-              <div className="stat-value" style={{ color: d.pending_reviews ? "#b7791f" : undefined }}>{d.pending_reviews}</div>
-              <Text size="xs" c="ledger.7" mt={2}>Open review queue</Text>
-            </Paper>
+            {canManage ? (
+              <Paper withBorder p="md" component={Link} to={`/spaces/${spaceId}/review`} style={{ textDecoration: "none", color: "inherit" }}>
+                <Text size="sm" c="dimmed">Waiting for review</Text>
+                <div className="stat-value" style={{ color: d.pending_reviews ? STATUS.late.color : undefined }}>{d.pending_reviews}</div>
+                <Text size="xs" c="ledger.7" mt={2}>Open review queue</Text>
+              </Paper>
+            ) : <Stat label="Waiting for review" value={d.pending_reviews} />}
           </SimpleGrid>
 
-          <SimpleGrid cols={{ base: 1, lg: 3 }}>
-            <Paper withBorder p="lg" style={{ gridColumn: "span 2" }}>
+          <Grid>
+            <Grid.Col span={{ base: 12, lg: 8 }}>
+            <Paper withBorder p="lg" h="100%">
               <Title order={4} mb="md">Last 14 days</Title>
               <BarChart
                 h={240}
@@ -129,7 +171,9 @@ export function Overview() {
                 tickLine="none"
               />
             </Paper>
-            <Paper withBorder p="lg">
+            </Grid.Col>
+            <Grid.Col span={{ base: 12, lg: 4 }}>
+            <Paper withBorder p="lg" h="100%">
               <Title order={4} mb="sm">Kiosks</Title>
               <Text>
                 <b>{d.devices.online}</b> of {d.devices.total} online
@@ -146,7 +190,8 @@ export function Overview() {
                 ))}
               </Stack>
             </Paper>
-          </SimpleGrid>
+            </Grid.Col>
+          </Grid>
 
           <SimpleGrid cols={{ base: 1, lg: 2 }}>
             <Paper withBorder p="lg">
@@ -156,10 +201,12 @@ export function Overview() {
                   <Table.Tbody>
                     {d.recent.map((e) => (
                       <Table.Tr key={e.id}>
-                        <Table.Td w={90} style={{ whiteSpace: "nowrap" }}>{fmtTime(e.occurred_at, tz)}</Table.Td>
+                        <Table.Td w={110} style={{ whiteSpace: "nowrap" }}>
+                          {dateIn(tz, new Date(e.occurred_at)) === today ? fmtTime(e.occurred_at, tz) : fmtDateTime(e.occurred_at, tz)}
+                        </Table.Td>
                         <Table.Td>{e.member_name ?? <Text c="dimmed" span>Unknown</Text>}</Table.Td>
                         <Table.Td><Text size="sm" c="dimmed">{reasonText(e.reason)}</Text></Table.Td>
-                        <Table.Td ta="right"><Badge variant="light" color={EVENT_COLORS[e.status]} tt="none">{e.status}</Badge></Table.Td>
+                        <Table.Td ta="right"><EventBadge status={e.status} /></Table.Td>
                       </Table.Tr>
                     ))}
                   </Table.Tbody>
@@ -170,13 +217,13 @@ export function Overview() {
               <Title order={4} mb="sm">Most often late (30 days)</Title>
               {d.late_top.length === 0 ? <Text c="dimmed" size="sm">Nobody was late.</Text> : (
                 <Table verticalSpacing={6}>
-                  <Table.Thead><Table.Tr><Table.Th>Name</Table.Th><Table.Th ta="right">Days</Table.Th><Table.Th ta="right">Minutes</Table.Th></Table.Tr></Table.Thead>
+                  <Table.Thead><Table.Tr><Table.Th>Name</Table.Th><Table.Th ta="right">Days</Table.Th><Table.Th ta="right">Total late</Table.Th></Table.Tr></Table.Thead>
                   <Table.Tbody>
                     {d.late_top.map((r) => (
                       <Table.Tr key={r.external_id}>
                         <Table.Td>{r.name} <Text span c="dimmed" size="sm">{r.external_id}</Text></Table.Td>
                         <Table.Td ta="right">{r.days}</Table.Td>
-                        <Table.Td ta="right">{r.minutes}</Table.Td>
+                        <Table.Td ta="right">{fmtMinutes(r.minutes)}</Table.Td>
                       </Table.Tr>
                     ))}
                   </Table.Tbody>
@@ -186,6 +233,9 @@ export function Overview() {
           </SimpleGrid>
         </Stack>
       )}
+      </QueryState>
+      )}
+      <WhoModal spaceId={spaceId} day={day} status={who} tz={tz} onClose={() => setWho(null)} />
     </>
   );
 }

@@ -13,7 +13,7 @@ import { MantineProvider } from "@mantine/core";
 import { ModalsProvider } from "@mantine/modals";
 import { Notifications } from "@mantine/notifications";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode } from "react";
+import { Component, StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider, useMe } from "./auth";
@@ -34,6 +34,22 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: true, retry: 1, staleTime: 10_000 } },
 });
 
+/** A crash in one page shows a message instead of a blank white screen. */
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div style={{ padding: 32, fontFamily: "system-ui, sans-serif", maxWidth: 560 }}>
+        <h2>Something went wrong on this page</h2>
+        <p>Reload the page to continue. If it keeps happening, tell your administrator what you were doing.</p>
+        <button onClick={() => window.location.reload()}>Reload</button>
+      </div>
+    );
+  }
+}
+
 function Home() {
   const { me } = useMe();
   return <Navigate to={me.spaces.length === 1 ? `/spaces/${me.spaces[0].id}` : "/spaces"} replace />;
@@ -41,6 +57,7 @@ function Home() {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
+    <ErrorBoundary>
     <MantineProvider theme={theme} defaultColorScheme="light">
       <Notifications position="top-right" />
       <ModalsProvider>
@@ -72,5 +89,6 @@ createRoot(document.getElementById("root")!).render(
       </QueryClientProvider>
       </ModalsProvider>
     </MantineProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );

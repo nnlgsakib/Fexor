@@ -1,22 +1,21 @@
 import { Alert, Badge, Button, Code, Group, Image, List, Modal, Paper, Stack, Table, Text, TextInput } from "@mantine/core";
 import { useDisclosure, useInterval } from "@mantine/hooks";
-import { modals } from "@mantine/modals";
 import { IconPlus } from "@tabler/icons-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useMe } from "../auth";
 import type { Device } from "../types";
-import { PageHeader, fmtDateTime, notifyError, useSpace } from "../ui";
+import { PageHeader, QueryState, confirmAction, fmtDateTime, notifyError, notifyOk, useSpace } from "../ui";
 
-type Pairing = { name: string; code: string; expires: string };
+type Pairing = { id: string; name: string; code: string; expires: string };
 
 function useQr(text: string | null) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     if (!text) { setSrc(null); return; }
-    QRCode.toDataURL(text, { margin: 2, width: 320, errorCorrectionLevel: "M" }).then(setSrc);
+    QRCode.toDataURL(text, { margin: 2, width: 320, errorCorrectionLevel: "M" }).then(setSrc).catch(() => setSrc(null));
   }, [text]);
   return src;
 }
@@ -42,8 +41,8 @@ function PairingModal({ pairing, onClose }: { pairing: Pairing | null; onClose: 
       {pairing && (
         <Stack>
           <List type="ordered" spacing={4} size="sm">
-            <List.Item>Start the kiosk app on the kiosk computer. Its screen says <b>Set up this kiosk</b>.</List.Item>
-            <List.Item>Choose the camera there.</List.Item>
+            <List.Item>Start the Fexor Kiosk app on the kiosk computer and choose <b>New session</b>.</List.Item>
+            <List.Item>Pick the camera on its <b>Set up this kiosk</b> screen.</List.Item>
             <List.Item>Hold this QR code in front of the kiosk camera. It connects by itself.</List.Item>
           </List>
           <Group justify="center">{qr && <Image src={qr} w={300} h={300} alt="Pairing QR code" />}</Group>
@@ -84,42 +83,61 @@ function SettingsQrModal({ data, onClose }: { data: { name: string; token: strin
 }
 
 export function Devices() {
-  const { spaceId, canManage } = useSpace();
+  const { spaceId, space, canManage } = useSpace();
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["devices", spaceId], queryFn: () => api<Device[]>(`/spaces/${spaceId}/devices`), refetchInterval: 5_000 });
   const [addOpen, addCtl] = useDisclosure();
   const [name, setName] = useState("");
   const [pairing, setPairing] = useState<Pairing | null>(null);
   const [settingsQr, setSettingsQr] = useState<{ name: string; token: string; expires: string } | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const refresh = () => qc.invalidateQueries({ queryKey: ["devices", spaceId] });
+  const tz = space?.timezone;
 
-  // Close the pairing window once the kiosk has connected.
-  const paired = pairing && q.data?.some((d) => d.name === pairing.name && d.online && !d.enroll_pending);
-  useEffect(() => { if (paired) setPairing(null); }, [paired]);
+  // Close the pairing window once that kiosk has connected.
+  const paired = pairing && q.data?.some((d) => d.id === pairing.id && d.online && !d.enroll_pending);
+  useEffect(() => {
+    if (paired) { notifyOk(`"${pairing!.name}" is connected`); setPairing(null); }
+  }, [paired]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const add = async () => {
-    try {
-      const r = await api<Device & { enroll_code: string; enroll_expires_at: string }>(`/spaces/${spaceId}/devices`, { json: { name } });
-      addCtl.close(); setName(""); setPairing({ name: r.name, code: r.enroll_code, expires: r.enroll_expires_at }); refresh();
-    } catch (e) { notifyError(e); }
-  };
+  const add = useMutation({
+    mutationFn: () => api<Device & { enroll_code: string; enroll_expires_at: string }>(`/spaces/${spaceId}/devices`, { json: { name: name.trim() } }),
+    onSuccess: (r) => { addCtl.close(); setName(""); setPairing({ id: r.id, name: r.name, code: r.enroll_code, expires: r.enroll_expires_at }); refresh(); },
+    onError: notifyError,
+  });
+  const rename = useMutation({
+    mutationFn: () => api(`/spaces/${spaceId}/devices/${renaming!.id}`, { method: "PATCH", json: { name: renaming!.name.trim() } }),
+    onSuccess: () => { notifyOk("Kiosk renamed"); setRenaming(null); refresh(); },
+    onError: notifyError,
+  });
   const newCode = async (d: Device) => {
     try {
       const r = await api<{ enroll_code: string; enroll_expires_at: string }>(`/spaces/${spaceId}/devices/${d.id}/enroll-code`, { method: "POST" });
-      setPairing({ name: d.name, code: r.enroll_code, expires: r.enroll_expires_at }); refresh();
+      setPairing({ id: d.id, name: d.name, code: r.enroll_code, expires: r.enroll_expires_at }); refresh();
     } catch (e) { notifyError(e); }
   };
+  const remove = (d: Device) => confirmAction({
+    title: `Remove "${d.name}" from the list?`, text: "Its past check-ins are kept. To use this computer again, add it as a new kiosk.",
+    confirm: "Remove",
+    onConfirm: async () => {
+      try { await api(`/spaces/${spaceId}/devices/${d.id}`, { method: "DELETE", query: { remove: true } }); notifyOk("Kiosk removed"); refresh(); }
+      catch (e) { notifyError(e); }
+    },
+  });
   const openSettings = async (d: Device) => {
     try {
       const r = await api<{ token: string; expires_at: string }>(`/spaces/${spaceId}/devices/${d.id}/settings-token`, { method: "POST" });
       setSettingsQr({ name: d.name, token: r.token, expires: r.expires_at });
     } catch (e) { notifyError(e); }
   };
-  const revoke = (d: Device) => modals.openConfirmModal({
+  const revoke = (d: Device) => confirmAction({
     title: `Disconnect "${d.name}"?`,
-    children: <Text size="sm">The kiosk stops working immediately. Check-ins it stored while offline and has not uploaded yet are lost.</Text>,
-    labels: { confirm: "Disconnect", cancel: "Cancel" }, confirmProps: { color: "red" },
-    onConfirm: async () => { try { await api(`/spaces/${spaceId}/devices/${d.id}`, { method: "DELETE" }); refresh(); } catch (e) { notifyError(e); } },
+    text: `The kiosk stops working immediately.${Number(d.info?.outbox) > 0 ? ` It still has ${d.info.outbox} check-ins waiting to upload; those are lost.` : ""}`,
+    confirm: "Disconnect",
+    onConfirm: async () => {
+      try { await api(`/spaces/${spaceId}/devices/${d.id}`, { method: "DELETE" }); notifyOk("Kiosk disconnected"); refresh(); }
+      catch (e) { notifyError(e); }
+    },
   });
 
   return (
@@ -127,6 +145,7 @@ export function Devices() {
       <PageHeader title="Kiosks"
         description="A kiosk is any computer with a camera: a Raspberry Pi, a laptop or a PC. It checks faces on the device and keeps working when the network is down."
         actions={canManage && <Button leftSection={<IconPlus size={16} />} onClick={addCtl.open}>Add kiosk</Button>} />
+      <QueryState q={q}>
       <Paper withBorder>
         <Table.ScrollContainer minWidth={760}>
           <Table verticalSpacing="sm">
@@ -142,14 +161,16 @@ export function Devices() {
                       : <Badge color="orange" variant="light" tt="none">Offline</Badge>}
                     {d.info?.camera_ok === false && d.online && <Badge ml={6} color="red" variant="light" tt="none">Camera problem</Badge>}
                   </Table.Td>
-                  <Table.Td>{fmtDateTime(d.last_seen_at)}</Table.Td>
+                  <Table.Td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(d.last_seen_at, tz)}</Table.Td>
                   <Table.Td>{d.info?.outbox ?? "–"}</Table.Td>
                   <Table.Td><Text size="xs" c="dimmed">{[d.info?.machine, d.info?.version && `v${d.info.version}`].filter(Boolean).join(", ")}</Text></Table.Td>
                   <Table.Td ta="right">
                     {canManage && <Group gap={6} justify="flex-end" wrap="nowrap">
                       {d.enrolled_at && !d.revoked_at && <Button size="xs" variant="default" onClick={() => openSettings(d)}>Settings QR</Button>}
                       <Button size="xs" variant="default" onClick={() => newCode(d)}>{d.enrolled_at ? "Set up again" : "Show pairing QR"}</Button>
+                      <Button size="xs" variant="subtle" onClick={() => setRenaming({ id: d.id, name: d.name })}>Rename</Button>
                       {!d.revoked_at && <Button size="xs" variant="subtle" color="red" onClick={() => revoke(d)}>Disconnect</Button>}
+                      {d.revoked_at && <Button size="xs" variant="subtle" color="red" onClick={() => remove(d)}>Remove</Button>}
                     </Group>}
                   </Table.Td>
                 </Table.Tr>
@@ -165,12 +186,20 @@ export function Devices() {
           </Stack>
         )}
       </Paper>
+      </QueryState>
 
       <Modal opened={addOpen} onClose={addCtl.close} title="Add kiosk">
         <Stack>
           <TextInput label="Name" placeholder="Front gate, Lobby, Floor 2" value={name} onChange={(e) => setName(e.currentTarget.value)} data-autofocus
-            onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) add(); }} />
-          <Button onClick={add} disabled={!name.trim()}>Continue</Button>
+            onKeyDown={(e) => { if (e.key === "Enter" && name.trim() && !add.isPending) add.mutate(); }} />
+          <Button onClick={() => add.mutate()} loading={add.isPending} disabled={!name.trim()}>Continue</Button>
+        </Stack>
+      </Modal>
+      <Modal opened={!!renaming} onClose={() => setRenaming(null)} title="Rename kiosk">
+        <Stack>
+          <TextInput label="Name" value={renaming?.name ?? ""} data-autofocus maxLength={100}
+            onChange={(e) => { const v = e.currentTarget.value; setRenaming((r) => r && { ...r, name: v }); }} />
+          <Button onClick={() => rename.mutate()} loading={rename.isPending} disabled={!renaming?.name.trim()}>Save</Button>
         </Stack>
       </Modal>
       <PairingModal pairing={pairing} onClose={() => setPairing(null)} />

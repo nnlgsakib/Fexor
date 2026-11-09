@@ -15,6 +15,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 STATIC = Path(__file__).parent / "static"
 # After a reboot or power cut nobody is there to tap: the list opens the last session itself.
@@ -87,6 +88,7 @@ def create_sessions_app(root: Path, on_open, on_quit) -> FastAPI:
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts())
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     def check_origin(request: Request) -> None:
         origin, host = request.headers.get("origin"), request.headers.get("host")

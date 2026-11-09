@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -150,6 +151,7 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts())
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")  # bundled fonts
     app.state.verifier, app.state.syncer = verifier, syncer
 
     @app.get("/")

@@ -5,142 +5,222 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>Attendance Kiosk</title>
 <style>
+  /* Fexor kiosk: a time clock. Ledger-green ground, card-stock panels, brass for the one action,
+     and the result printed as an ink stamp. Fonts are bundled: kiosks are often offline. */
+  @font-face { font-family: "Shoulders"; src: url("/static/fonts/big-shoulders-700.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+  @font-face { font-family: "Shoulders"; src: url("/static/fonts/big-shoulders-800.woff2") format("woff2"); font-weight: 800; font-display: swap; }
+  @font-face { font-family: "Schibsted"; src: url("/static/fonts/schibsted-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "Schibsted"; src: url("/static/fonts/schibsted-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+  @font-face { font-family: "Schibsted"; src: url("/static/fonts/schibsted-600.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+  @font-face { font-family: "Schibsted"; src: url("/static/fonts/schibsted-700.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+
   :root {
-    --bg: #0d1117; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #8b949e;
-    --accent: #3fb6a8; --ok: #2ea043; --bad: #d1453b; --warn: #d29922;
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --ground: #0e3b31;      /* ledger green */
+    --ground-deep: #0a2c25;
+    --ground-line: #2a5a4e;
+    --card: #e9f0eb;        /* card stock */
+    --ink: #0f2620;
+    --ink-soft: #4a5f58;
+    --on-ground: #e9f0eb;
+    --on-ground-soft: #a9c2b9;
+    --brass: #e8b54a;       /* the one action */
+    --brass-deep: #c99528;
+    --ok: #1e7a47;          /* stamp inks */
+    --bad: #b8402c;
+    --warn: #e8b54a;
+    --display: "Shoulders", "Arial Narrow", "Roboto Condensed", sans-serif;
+    --text: "Schibsted", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-family: var(--text);
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  html, body { margin: 0; height: 100%; background: var(--ground); color: var(--on-ground);
     user-select: none; -webkit-user-select: none; overflow: hidden; }
-  body { display: grid; grid-template-rows: auto 1fr auto; }
-  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px;
-    border-bottom: 1px solid var(--line); font-size: 18px; }
-  header .space { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  header .spacer { flex: 1; }
-  header .clock { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; }
-  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 99px;
-    background: var(--panel); border: 1px solid var(--line); font-size: 14px; color: var(--muted); }
-  .pill.dev { color: var(--warn); border-color: var(--warn); }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
-  .dot.on { background: var(--ok); } .dot.off { background: var(--warn); }
-  main { display: flex; flex-direction: column; align-items: center; justify-content: safe center;
-    gap: 18px; padding: 16px; min-height: 0; overflow-y: auto; }
-  .stage { position: relative; width: min(78vw, 56vh * 4 / 3); aspect-ratio: 4 / 3;
-    border-radius: 22px; overflow: hidden; background: #000; border: 2px solid var(--line); flex: none; }
-  .stage img, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%;
-    object-fit: cover; transform: scaleX(-1); }
-  .guide { position: absolute; left: 50%; top: 47%; width: 38%; aspect-ratio: 3 / 4;
-    transform: translate(-50%, -50%); border: 3px dashed rgba(255,255,255,.35); border-radius: 50%;
-    pointer-events: none; transition: border-color .2s; }
-  .stage.face .guide { border-color: var(--accent); border-style: solid; }
-  .stage.qr .guide { border-radius: 18px; aspect-ratio: 1; width: 42%; }
-  .nocam { position: absolute; inset: 0; display: none; place-items: center; color: var(--text);
-    background: #000; font-size: 24px; font-weight: 600; text-align: center; padding: 20px; z-index: 1; }
-  .stage.nocamera .nocam { display: grid; }
-  .msg { font-size: clamp(22px, 3.4vw, 40px); font-weight: 650; text-align: center; min-height: 1.3em;
-    max-width: 90vw; }
-  .sub { color: var(--muted); font-size: 22px; text-align: center; min-height: 1.2em; }
-  .steps { display: flex; gap: 10px; }
-  .steps span { width: 46px; height: 8px; border-radius: 4px; background: var(--line); }
-  .steps span.done { background: var(--accent); }
-  .steps span.now { background: var(--warn); }
-  button { font: inherit; font-size: 24px; font-weight: 650; padding: 18px 46px; border-radius: 16px;
-    border: 0; background: var(--accent); color: #04211d; cursor: pointer; min-width: 260px; }
-  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line);
-    font-size: 18px; padding: 12px 28px; min-width: 0; }
-  button.small { font-size: 17px; padding: 12px 20px; min-width: 0; min-height: 48px; border-radius: 10px; }
-  button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
-  button:active { transform: scale(.98); }
-  button:disabled { opacity: .5; cursor: default; }
-  .upload { font-size: 16px; color: var(--warn); border: 1px dashed var(--warn); border-radius: 12px;
-    padding: 10px 22px; cursor: pointer; }
-  .uperr { color: var(--bad); font-size: 16px; min-height: 1.2em; }
+  body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
   .hidden { display: none !important; }
+  button { font: inherit; cursor: pointer; }
+  :focus-visible { outline: 3px solid var(--brass); outline-offset: 3px; }
 
-  /* Setup and settings: preview on the left, steps on the right. */
-  body.manage main { flex-direction: row; align-items: flex-start; justify-content: center; gap: 28px;
-    overflow-y: auto; }
-  body.manage .stage { width: min(46vw, 64vh * 4 / 3); position: sticky; top: 0; }
+  /* ---------- top bar ---------- */
+  header { display: flex; align-items: center; gap: 14px; padding: 12px clamp(16px, 3vw, 36px);
+    border-bottom: 1px solid var(--ground-line); }
+  .space { font-weight: 600; font-size: 19px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 99px;
+    border: 1px solid var(--ground-line); font-size: 14px; color: var(--on-ground-soft); white-space: nowrap; }
+  .pill.dev { color: var(--brass); border-color: var(--brass); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--on-ground-soft); }
+  .dot.on { background: #52c98a; } .dot.off { background: var(--brass); }
+  .ghost { background: transparent; color: var(--on-ground); border: 1.5px solid var(--ground-line);
+    border-radius: 12px; padding: 0 18px; min-height: 48px; font-size: 17px; font-weight: 600; }
+  .ghost:active { background: var(--ground-deep); }
+
+  /* ---------- verify screen: camera slot | time clock ---------- */
+  main { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, 1fr); gap: clamp(16px, 3vw, 48px);
+    padding: clamp(14px, 3vh, 36px) clamp(16px, 3vw, 48px); min-height: 0; }
+  .viewport { display: grid; place-items: center; min-height: 0; }
+  .stage { position: relative; width: min(100%, (100vh - 150px) * 4 / 3); aspect-ratio: 4 / 3;
+    border-radius: 22px; overflow: hidden; background: #000; box-shadow: 0 0 0 3px var(--ground-line); }
+  .stage img, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  /* Where to hold things: corner marks for the card, an oval for the face. */
+  .guide { position: absolute; left: 50%; top: 48%; transform: translate(-50%, -50%); pointer-events: none; }
+  .stage .guide { width: 44%; aspect-ratio: 1; --c: rgba(233, 240, 235, .85);
+    background:
+      linear-gradient(var(--c) 0 0) top left / 22% 4px no-repeat, linear-gradient(var(--c) 0 0) top left / 4px 22% no-repeat,
+      linear-gradient(var(--c) 0 0) top right / 22% 4px no-repeat, linear-gradient(var(--c) 0 0) top right / 4px 22% no-repeat,
+      linear-gradient(var(--c) 0 0) bottom left / 22% 4px no-repeat, linear-gradient(var(--c) 0 0) bottom left / 4px 22% no-repeat,
+      linear-gradient(var(--c) 0 0) bottom right / 22% 4px no-repeat, linear-gradient(var(--c) 0 0) bottom right / 4px 22% no-repeat; }
+  .stage.qr .guide { --c: var(--brass); }
+  .stage.face .guide { width: 36%; aspect-ratio: 3 / 4; background: none; border-radius: 50%;
+    border: 4px solid var(--brass); }
+  .nocam { position: absolute; inset: 0; display: none; place-items: center; background: var(--ground-deep);
+    color: var(--on-ground); font-size: 24px; font-weight: 600; text-align: center; padding: 24px; line-height: 1.35; z-index: 1; }
+  .stage.nocamera .nocam { display: grid; }
+
+  .clockface { display: flex; flex-direction: column; justify-content: center; gap: clamp(10px, 2.4vh, 22px); min-height: 0; }
+  .clock { font-family: var(--display); font-weight: 800; font-size: clamp(64px, 15vh, 168px); line-height: .9;
+    letter-spacing: .01em; font-variant-numeric: tabular-nums; }
+  .date { font-size: clamp(17px, 2.6vh, 24px); color: var(--on-ground-soft); margin-top: clamp(6px, 1.2vh, 12px); }
+  body.busy .clock { font-size: clamp(40px, 7vh, 72px); }
+
+  /* The three things a person does, in order. */
+  .track { list-style: none; display: flex; gap: clamp(10px, 2vw, 22px); margin: 0; padding: 0; font-weight: 600;
+    font-size: clamp(16px, 2.4vh, 20px); color: var(--on-ground-soft); }
+  .track li { display: flex; align-items: center; gap: 8px; }
+  .track b { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+    border: 2px solid var(--ground-line); font-family: var(--display); font-size: 19px; font-weight: 800; }
+  .track li.now { color: var(--on-ground); }
+  .track li.now b { border-color: var(--brass); color: var(--brass); }
+  .track li.done b { background: var(--brass); border-color: var(--brass); color: var(--ink); }
+
+  .msg { font-size: clamp(26px, 5vh, 46px); font-weight: 700; line-height: 1.12; max-width: 18em; min-height: 1.1em; }
+  .msg.prompt { font-family: var(--display); font-weight: 800; font-size: clamp(40px, 8.5vh, 88px); color: var(--brass); line-height: 1; }
+  .sub { font-size: clamp(18px, 2.8vh, 24px); color: var(--on-ground-soft); min-height: 1.2em; }
+  .steps { display: flex; gap: 8px; }
+  .steps span { width: 40px; height: 8px; border-radius: 4px; background: var(--ground-line); }
+  .steps span.done { background: var(--on-ground); }
+  .steps span.now { background: var(--brass); }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .primary { background: var(--brass); color: var(--ink); border: 0; border-radius: 16px; font-weight: 700;
+    font-size: clamp(20px, 3vh, 26px); min-height: clamp(56px, 9vh, 76px); padding: 0 clamp(28px, 3vw, 44px); }
+  .primary:active { background: var(--brass-deep); }
+  .upload { font-size: 16px; color: var(--brass); border: 1.5px dashed var(--brass); border-radius: 12px;
+    padding: 12px 18px; cursor: pointer; }
+  .uperr { color: #f2a493; font-size: 16px; min-height: 1.2em; }
+  .note { font-size: 14px; color: var(--on-ground-soft); margin-top: auto; }
+
+  /* ---------- setup and settings (admins, occasionally) ---------- */
+  body.manage main { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); overflow-y: auto; align-items: start; }
+  body.manage .viewport { position: sticky; top: 0; }
+  body.manage .stage { width: 100%; }
   body.manage .verify { display: none !important; }
-  .panel { width: min(560px, 92vw); display: grid; gap: 18px; user-select: text; }
-  .panel h1 { margin: 0; font-size: 30px; }
-  .panel h2 { margin: 0 0 4px; font-size: 20px; display: flex; gap: 10px; align-items: center; }
-  .panel h2 .n { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
-    background: var(--accent); color: #04211d; font-size: 16px; }
-  .panel p { margin: 0; color: var(--muted); line-height: 1.45; }
-  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px;
-    display: grid; gap: 12px; }
-  .cams { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .cam { background: #000; border: 2px solid var(--line); border-radius: 10px; padding: 0; min-width: 0;
-    display: grid; overflow: hidden; color: var(--muted); font-size: 14px; font-weight: 500; }
+  .panel { display: grid; gap: 16px; user-select: text; max-width: 640px; padding-bottom: 24px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .panel h1 { margin: 0; font-family: var(--display); font-weight: 800; font-size: clamp(34px, 6vh, 52px); line-height: 1; }
+  .panel > p { margin: 0; color: var(--on-ground-soft); font-size: 17px; }
+  .box { background: var(--card); color: var(--ink); border-radius: 16px; padding: 20px; display: grid; gap: 12px; }
+  .box h2 { margin: 0; font-size: 21px; display: flex; gap: 10px; align-items: center; }
+  .box h2 .n { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+    background: var(--ground); color: var(--card); font-family: var(--display); font-weight: 800; font-size: 18px; }
+  .box p { margin: 0; color: var(--ink-soft); line-height: 1.45; font-size: 16px; }
+  .box .ghost { color: var(--ink); border-color: #b9c9c2; }
+  .box .solid { background: var(--ground); color: var(--card); border: 0; border-radius: 12px; min-height: 48px;
+    padding: 0 20px; font-weight: 700; font-size: 17px; }
+  .box .danger { background: transparent; color: var(--bad); border: 1.5px solid var(--bad); border-radius: 12px;
+    min-height: 48px; padding: 0 18px; font-weight: 600; font-size: 17px; }
+  .cams { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .cam { background: #000; border: 3px solid transparent; border-radius: 12px; padding: 0; min-width: 0;
+    display: grid; overflow: hidden; color: var(--ink-soft); font-size: 14px; font-weight: 600; }
   .cam img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; transform: scaleX(-1); }
-  .cam .ph { aspect-ratio: 4 / 3; display: grid; place-items: center; }
-  .cam span { padding: 6px; background: var(--panel); }
-  .cam.on { border-color: var(--accent); color: var(--text); }
+  .cam .ph { aspect-ratio: 4 / 3; display: grid; place-items: center; color: var(--on-ground-soft); }
+  .cam span { padding: 7px; background: #d7e2dc; }
+  .cam.on { border-color: var(--ground); color: var(--ink); }
+  .cam.on span { background: var(--ground); color: var(--card); }
   .row { display: flex; gap: 10px; }
   .row input { flex: 1; }
-  input { font: inherit; font-size: 17px; padding: 12px; border-radius: 10px; min-width: 0;
-    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
-  .status { font-size: 17px; min-height: 1.3em; }
-  .status.error { color: var(--bad); } .status.done { color: var(--ok); }
-  .status.connecting { color: var(--warn); }
-  details summary { cursor: pointer; color: var(--muted); padding: 10px 0; min-height: 44px; }
-  details[open] summary { margin-bottom: 12px; }
+  input { font: inherit; font-size: 17px; padding: 12px 14px; border-radius: 12px; min-width: 0; min-height: 48px;
+    border: 1.5px solid #b9c9c2; background: #fff; color: var(--ink); }
+  .status { font-size: 17px; min-height: 1.3em; font-weight: 500; }
+  .status.error { color: var(--bad); } .status.done { color: var(--ok); } .status.connecting { color: #8a5a00; }
+  details summary { cursor: pointer; color: var(--ink-soft); padding: 10px 0; min-height: 44px; font-weight: 600; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; font-size: 16px; }
-  dt { color: var(--muted); } dd { margin: 0; word-break: break-all; }
-  .warnline { color: var(--warn); font-size: 15px; }
+  dt { color: var(--ink-soft); } dd { margin: 0; word-break: break-all; font-weight: 500; }
+  .warnline { color: #8a5a00; font-size: 15px; font-weight: 500; }
+  .closebar { display: flex; gap: 12px; flex-wrap: wrap; }
 
-  .result { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.72);
-    backdrop-filter: blur(4px); }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 28px;
-    padding: 40px 56px; text-align: center; display: grid; gap: 14px; justify-items: center;
-    min-width: min(560px, 90vw); max-width: 96vw; max-height: calc(100vh - 24px); overflow-y: auto;
-    border-top: 10px solid var(--ok); }
-  .card.bad { border-top-color: var(--bad); }
-  .card .icon { width: 84px; height: 84px; }
-  .card .name { font-size: 34px; font-weight: 700; }
-  .card .label { font-size: 26px; }
-  .card .time { font-size: 48px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .card .why { font-size: 24px; color: var(--text); max-width: 520px; }
-  footer { padding: 10px 24px; color: var(--muted); font-size: 14px; display: flex; gap: 18px;
-    border-top: 1px solid var(--line); }
-  .menubtn { font-size: 17px; padding: 12px 18px; min-width: 0; min-height: 48px; border-radius: 10px; }
-  .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-  .sheet { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.7);
-    backdrop-filter: blur(4px); z-index: 10; }
-  .sheet .card { border-top-color: var(--accent); gap: 16px; padding: 32px 40px; }
-  .sheet h2 { margin: 0; font-size: 26px; }
-  .sheet .actions { display: grid; gap: 12px; width: min(420px, 80vw); }
-  .sheet .actions button { width: 100%; }
-  .sheet img { width: min(420px, 80vw); aspect-ratio: 4 / 3; object-fit: cover; border-radius: 14px;
-    transform: scaleX(-1); background: #000; justify-self: center; }
-  .sheet p { margin: 0; color: var(--muted); font-size: 18px; max-width: 460px; line-height: 1.4; }
-  @media (max-width: 900px) {
-    body.manage main { flex-direction: column; align-items: center; }
-    body.manage .stage { position: relative; width: min(92vw, 50vh * 4 / 3); }
+  /* ---------- the result: a time card with an ink stamp ---------- */
+  .result { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(10, 44, 37, .88); z-index: 5; }
+  .card { background: var(--card); color: var(--ink); border-radius: 22px; width: min(620px, 92vw);
+    max-height: calc(100vh - 24px); overflow-y: auto; padding: clamp(22px, 4vh, 40px) clamp(22px, 4vw, 44px);
+    display: grid; gap: clamp(12px, 2.4vh, 22px); justify-items: start; animation: rise .22s ease-out; }
+  .card .name { font-size: clamp(28px, 5vh, 42px); font-weight: 700; line-height: 1.1; }
+  .card .id { font-size: 17px; color: var(--ink-soft); margin-top: 6px; }
+  /* Time card: who on the left, the stamp pressed on the right, then what to do. */
+  .result .card { grid-template-columns: minmax(0, 1fr) auto; column-gap: clamp(16px, 3vw, 32px); align-items: center; }
+  .result .card > * { grid-column: 1 / -1; }
+  .result .card .who { grid-column: 1; }
+  .result .card .stamp { grid-column: 2; grid-row: 1; justify-self: end; }
+  .result .card.noname .stamp { grid-column: 1 / -1; grid-row: auto; justify-self: start; }
+  .stamp { --inkc: var(--ok); color: var(--inkc); border: 6px double var(--inkc); border-radius: 12px;
+    padding: 6px 20px 10px; transform: rotate(-4deg); display: grid; justify-items: center;
+    font-family: var(--display); font-weight: 800; line-height: .95; mix-blend-mode: multiply; opacity: .94;
+    animation: stamp .32s cubic-bezier(.2, 1.5, .4, 1); }
+  .card.bad .stamp { --inkc: var(--bad); }
+  .stamp .label { font-size: clamp(30px, 6vh, 50px); }
+  .stamp .time { font-size: clamp(52px, 11vh, 96px); font-variant-numeric: tabular-nums; }
+  .card .why { font-size: clamp(19px, 3vh, 24px); line-height: 1.35; margin: 0; max-width: 30em; }
+  .card .actions { width: 100%; }
+  .card .done { background: var(--ground); color: var(--card); border: 0; border-radius: 14px; font-weight: 700;
+    font-size: 21px; min-height: 60px; padding: 0 36px; }
+  .card .ask { background: transparent; color: var(--ink); border: 1.5px solid #9fb4ab; border-radius: 14px;
+    font-weight: 600; font-size: 18px; min-height: 60px; padding: 0 22px; }
+  @keyframes rise { from { transform: translateY(24px); opacity: 0; } }
+  @keyframes stamp { from { transform: rotate(-10deg) scale(1.7); opacity: 0; } }
+
+  /* ---------- menu (settings and exit need the admin's Settings QR) ---------- */
+  .sheet { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(10, 44, 37, .88); z-index: 10; }
+  .sheet .card { justify-items: stretch; width: min(520px, 92vw); }
+  .sheet h2 { margin: 0; font-family: var(--display); font-weight: 800; font-size: 40px; line-height: 1; }
+  .sheet p { margin: 0; color: var(--ink-soft); font-size: 18px; line-height: 1.4; }
+  .sheet .list { display: grid; gap: 12px; }
+  .sheet .list button { min-height: 60px; border-radius: 14px; font-size: 20px; font-weight: 700; }
+  .sheet .go { background: var(--ground); color: var(--card); border: 0; }
+  .sheet .alt { background: transparent; color: var(--ink); border: 1.5px solid #9fb4ab; }
+  .sheet img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 14px; transform: scaleX(-1); background: #000; }
+
+  /* ---------- screen shapes ---------- */
+  @media (orientation: portrait) {
+    /* A plain column: the camera box gets a fixed height (a percentage width can't be measured
+       inside a grid row, which collapsed it under the clock). */
+    main, body.manage main { display: flex; flex-direction: column; overflow-y: auto; }
+    .viewport, body.manage .viewport { display: block; position: static; flex-shrink: 0; }
+    .clockface, .panel { flex-shrink: 0; }  /* the column scrolls instead of squeezing */
+    .stage, body.manage .stage { height: 38vh; width: auto; max-width: 100%; margin: 0 auto; }
+    .clockface { justify-content: flex-start; min-height: auto; }
+    .clock { font-size: clamp(56px, 9vh, 120px); }
   }
-  /* Small screens such as the 7-inch Raspberry Pi display (800 x 480): everything must fit. */
+  @media (max-width: 560px) {
+    .result .card { grid-template-columns: 1fr; }
+    .result .card .stamp { grid-column: 1; grid-row: auto; justify-self: start; }
+  }
+  @media (max-width: 760px) {
+    body.manage main { grid-template-columns: 1fr; }
+    body.manage .viewport { position: static; }
+    body.manage .stage { width: min(100%, 44vh * 4 / 3); }
+  }
+  /* Raspberry Pi 7" display (800 x 480) and other short screens. */
   @media (max-height: 520px) {
-    header { padding: 6px 14px; font-size: 16px; gap: 10px; }
-    header .clock { font-size: 18px; }
-    footer { display: none; }
-    main { gap: 8px; padding: 8px; }
-    .stage { width: min(78vw, 44vh * 4 / 3); border-radius: 14px; }
-    .msg { font-size: 24px; }
-    .sub { font-size: 18px; }
-    button { font-size: 20px; padding: 12px 30px; min-width: 200px; }
-    .card { padding: 18px 24px; gap: 8px; border-radius: 18px; }
-    .card .icon { width: 52px; height: 52px; }
-    .card .name { font-size: 26px; }
-    .card .label { font-size: 22px; }
-    .card .time { font-size: 34px; }
-    .card .why { font-size: 20px; }
-    .sheet img { width: auto; height: 34vh; }
-    .sheet .card { padding: 16px 24px; gap: 10px; }
-    .sheet p { font-size: 16px; }
-    .sheet h2 { font-size: 22px; }
-    .panel h1 { font-size: 24px; }
+    header { padding: 6px 14px; }
+    .space { font-size: 16px; }
+    main { padding: 10px 14px; gap: 14px; }
+    .stage { width: min(100%, (100vh - 90px) * 4 / 3); border-radius: 14px; }
+    .clockface { gap: 8px; }
+    .note { display: none; }
+    .card .stamp .time { font-size: 60px; }
+    .sheet img { width: auto; height: 34vh; justify-self: center; }
+    .sheet h2 { font-size: 30px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
   }
 </style>
 </head>
@@ -151,35 +231,48 @@
   <span class="pill hidden" id="queue"></span>
   <span class="pill dev hidden" id="devpill">Test mode</span>
   <span class="spacer"></span>
-  <span class="clock" id="clock">--:--</span>
-  <button class="ghost menubtn hidden" id="menuBtn" aria-label="Kiosk menu">Menu</button>
+  <button class="ghost hidden" id="menuBtn" aria-label="Kiosk menu">Menu</button>
 </header>
 
 <main>
-  <div class="stage" id="stage">
-    <img id="video" alt="">
-    <canvas id="overlay"></canvas>
-    <div class="guide verify"></div>
-    <div class="nocam" id="nocam">The camera is not working.<br>Please tell the admin.</div>
+  <div class="viewport">
+    <div class="stage" id="stage">
+      <img id="video" alt="">
+      <canvas id="overlay"></canvas>
+      <div class="guide verify"></div>
+      <div class="nocam" id="nocam">The camera is not working.<br>Please tell the admin.</div>
+    </div>
   </div>
 
-  <div class="msg verify" id="msg">Starting…</div>
-  <div class="sub verify" id="sub"></div>
-  <div class="steps verify hidden" id="steps"></div>
-  <button id="start" class="verify">Start verification</button>
-  <button id="cancel" class="ghost verify hidden">Cancel</button>
-  <label class="upload verify hidden" id="qrup">Test: upload a QR image instead of scanning
-    <input type="file" id="qrfile" accept="image/png,image/jpeg,image/webp" hidden>
-  </label>
-  <div class="uperr verify" id="uperr"></div>
+  <section class="clockface verify" aria-live="polite">
+    <div>
+      <div class="clock" id="clock">--:--</div>
+      <div class="date" id="date"></div>
+    </div>
+    <ol class="track" id="track" aria-label="Steps">
+      <li><b>1</b>Card</li><li><b>2</b>Face</li><li><b>3</b>Moves</li>
+    </ol>
+    <div class="msg" id="msg">Starting…</div>
+    <div class="sub" id="sub"></div>
+    <div class="steps hidden" id="steps"></div>
+    <div class="actions">
+      <button class="primary" id="start">Start check-in</button>
+      <button class="ghost hidden" id="cancel">Cancel</button>
+      <label class="upload hidden" id="qrup">Test: upload a QR image
+        <input type="file" id="qrfile" accept="image/png,image/jpeg,image/webp" hidden>
+      </label>
+    </div>
+    <div class="uperr" id="uperr"></div>
+    <p class="note" id="foot">Your face is checked on this kiosk and is never uploaded.</p>
+  </section>
 
   <!-- First-time setup -->
   <section class="panel hidden" id="setupPanel">
     <div class="topbar">
       <h1>Set up this kiosk</h1>
       <span class="row">
-        <button class="ghost menubtn switch hidden" id="switchSetup">Session list</button>
-        <button class="ghost menubtn quit hidden" id="quitSetupTop">Exit app</button>
+        <button class="ghost switch hidden" id="switchSetup">Session list</button>
+        <button class="ghost quit hidden" id="quitSetupTop">Exit app</button>
       </span>
     </div>
     <div class="box">
@@ -191,8 +284,8 @@
         <p>In the DroidCam app (or similar), find the Wi-Fi address and type it here, for example
           <b>http://192.168.1.5:4747/video</b>.</p>
         <div class="row" style="margin-top:10px">
-          <input id="camUrlSetup" placeholder="http://192.168.1.5:4747/video">
-          <button class="small" data-use-url="camUrlSetup">Use</button>
+          <input id="camUrlSetup" placeholder="http://192.168.1.5:4747/video" aria-label="Camera address">
+          <button class="solid" data-use-url="camUrlSetup">Use</button>
         </div>
       </details>
       <div class="status" id="camStatusSetup"></div>
@@ -205,9 +298,9 @@
       <details>
         <summary>Type the code instead</summary>
         <form id="setupForm" style="display:grid; gap:10px">
-          <input id="surl" placeholder="Server address, e.g. http://192.168.1.20" required>
-          <input id="scode" placeholder="Code, e.g. ABCDE-FGHJK" required autocapitalize="characters">
-          <button type="submit" class="small">Connect</button>
+          <input id="surl" placeholder="Server address, e.g. http://192.168.1.20" aria-label="Server address" required>
+          <input id="scode" placeholder="Code, e.g. ABCDE-FGHJK" aria-label="Pairing code" required autocapitalize="characters">
+          <button type="submit" class="solid">Connect</button>
         </form>
       </details>
     </div>
@@ -219,8 +312,8 @@
     <div class="topbar">
       <h1>Kiosk settings</h1>
       <span class="row">
-        <button class="ghost menubtn switch hidden" id="switchSettings">Session list</button>
-        <button class="ghost menubtn" id="backSettings">Back to kiosk</button>
+        <button class="ghost switch hidden" id="switchSettings">Session list</button>
+        <button class="ghost" id="backSettings">Back to kiosk</button>
       </span>
     </div>
     <p id="settingsTimer"></p>
@@ -237,8 +330,8 @@
       <p>Server moved to a new address (for example its IP changed)? Show this camera the pairing QR from the
         admin panel (<b>Kiosks</b>, <b>Set up again</b>), or type the new address here. The kiosk stays paired.</p>
       <div class="row">
-        <input id="serverUrl" placeholder="http://192.168.1.20">
-        <button class="small" id="saveServer">Save</button>
+        <input id="serverUrl" placeholder="http://192.168.1.20" aria-label="Server address">
+        <button class="solid" id="saveServer">Save</button>
       </div>
       <div class="status" id="serverStatus"></div>
     </div>
@@ -246,70 +339,70 @@
       <h2>Camera</h2>
       <div class="cams" id="camsSettings"></div>
       <div class="row">
-        <input id="camUrlSettings" placeholder="Phone or network camera, e.g. http://192.168.1.5:4747/video">
-        <button class="small" data-use-url="camUrlSettings">Use</button>
+        <input id="camUrlSettings" placeholder="Phone or network camera, e.g. http://192.168.1.5:4747/video" aria-label="Camera address">
+        <button class="solid" data-use-url="camUrlSettings">Use</button>
       </div>
       <div class="status" id="camStatusSettings"></div>
     </div>
     <div class="box">
       <h2>Pair with a different space</h2>
       <p>Disconnects this kiosk from its server so you can set it up again.</p>
-      <div><button class="small danger" id="repair">Disconnect this kiosk</button></div>
+      <div><button class="danger" id="repair">Disconnect this kiosk</button></div>
     </div>
-    <div class="row">
-      <button id="closeSettings">Close settings</button>
+    <div class="closebar">
+      <button class="primary" id="closeSettings">Close settings</button>
       <button class="ghost quit hidden" id="quitSettings">Exit app</button>
     </div>
   </section>
 </main>
 
-<footer><span id="foot">Your face is checked on this device and is not uploaded.</span></footer>
-
 <div class="result hidden" id="result">
-  <div class="card" id="card">
-    <svg class="icon" id="icon" viewBox="0 0 24 24" fill="none" stroke-width="2.2"
-         stroke-linecap="round" stroke-linejoin="round"></svg>
-    <div class="name" id="rname"></div>
-    <div class="label" id="rlabel"></div>
-    <div class="time" id="rtime"></div>
-    <div class="why" id="rwhy"></div>
-    <button id="review" class="ghost hidden">Ask admin to review</button>
-    <button id="dismiss">Done</button>
+  <div class="card" id="card" role="status" aria-live="assertive">
+    <div class="who"><div class="name" id="rname"></div><div class="id" id="rid"></div></div>
+    <div class="stamp" id="stamp"><span class="label" id="rlabel"></span><span class="time" id="rtime"></span></div>
+    <p class="why" id="rwhy"></p>
+    <div class="actions">
+      <button class="done" id="dismiss">Done</button>
+      <button class="ask hidden" id="review">Ask the admin to check</button>
+    </div>
   </div>
 </div>
 
 <div class="sheet hidden" id="menu" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
   <div class="card">
     <h2 id="menuTitle">Kiosk menu</h2>
-    <div class="actions" id="menuActions">
-      <button id="menuSettings">Settings</button>
-      <button class="ghost quit hidden" id="menuExit">Exit app</button>
-      <button class="ghost" id="menuBack">Back</button>
+    <div class="list" id="menuActions">
+      <button class="go" id="menuSettings">Settings</button>
+      <button class="alt quit hidden" id="menuExit">Exit app</button>
+      <button class="alt" id="menuBack">Back</button>
     </div>
-    <div class="actions hidden" id="menuUnlock">
+    <div class="list hidden" id="menuUnlock">
       <p id="menuUnlockText">In the admin panel, open <b>Kiosks</b> and click <b>Settings QR</b> next to this
         kiosk. Hold that QR code up to this camera.</p>
       <img id="menuVideo" alt="Camera">
-      <button class="ghost" id="menuUnlockBack">Back</button>
+      <button class="alt" id="menuUnlockBack">Back</button>
     </div>
   </div>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const OK_ICON = '<circle cx="12" cy="12" r="10" stroke="#2ea043"/><path d="M7 12.5l3.2 3.2L17 9" stroke="#2ea043"/>';
-const BAD_ICON = '<circle cx="12" cy="12" r="10" stroke="#d1453b"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7" stroke="#d1453b"/>';
 const CAMERA_SLOTS = 6;
 let ws, view = {}, lastUrl, dev = false, manageMode = "", canQuit = false;
 let menuAction = null;  // "settings" | "exit" while waiting for the admin's Settings QR
 let camUrls = [];  // preview pictures in the camera chooser, released when it reloads
 
 function tick() {
-  let text;
-  try {  // the space's time, like the times on the result screen
-    text = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", timeZone: view.tz || undefined});
-  } catch { text = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
-  $("clock").textContent = text;
+  // The space's time, like the times on the result card.
+  const opts = (o) => { try { return {...o, timeZone: view.tz || undefined}; } catch { return o; } };
+  const now = new Date();
+  try {
+    $("clock").textContent = now.toLocaleTimeString([], opts({hour: "2-digit", minute: "2-digit"}));
+    $("date").textContent = now.toLocaleDateString([], opts({weekday: "long", day: "numeric", month: "long"}));
+  } catch {
+    $("clock").textContent = now.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+    $("date").textContent = now.toLocaleDateString([], {weekday: "long", day: "numeric", month: "long"});
+  }
 }
 setInterval(tick, 1000); tick();
 
@@ -333,6 +426,7 @@ $("switchSettings").onclick = switchSession;
 // ---------- menu: settings and exit need the admin's Settings QR once the kiosk is paired ----------
 function openMenu() {
   menuAction = null;
+  $("menuTitle").textContent = "Kiosk menu";
   $("menuActions").classList.remove("hidden");
   $("menuUnlock").classList.add("hidden");
   $("menu").classList.remove("hidden");
@@ -354,7 +448,7 @@ function chooseMenu(action) {
 }
 $("menuBtn").onclick = openMenu;
 $("menuBack").onclick = closeMenu;
-$("menuUnlockBack").onclick = () => { $("menuTitle").textContent = "Kiosk menu"; openMenu(); };
+$("menuUnlockBack").onclick = openMenu;
 $("menuSettings").onclick = () => chooseMenu("settings");
 $("menuExit").onclick = () => chooseMenu("exit");
 document.addEventListener("keydown", (e) => {
@@ -379,7 +473,7 @@ function drawBox(box) {
   ctx.clearRect(0, 0, c.width, c.height);
   if (!box) return;
   // The canvas is mirrored by CSS, so raw camera coordinates line up with the mirrored video.
-  ctx.strokeStyle = "#3fb6a8"; ctx.lineWidth = 3;
+  ctx.strokeStyle = "#e8b54a"; ctx.lineWidth = 3;
   ctx.strokeRect(box[0] * c.width, box[1] * c.height, box[2] * c.width, box[3] * c.height);
 }
 
@@ -458,8 +552,8 @@ async function quitApp(confirmed = false) {
   if (!confirmed && !confirm("Close the kiosk app? People can't check in until it is started again.")) return;
   try { await post("/api/settings/quit"); } catch (e) { alert(e.message); }
 }
-$("quitSettings").onclick = quitApp;
-$("quitSetup").onclick = quitApp;
+$("quitSettings").onclick = () => quitApp();
+$("quitSetup").onclick = () => quitApp();
 
 $("saveServer").onclick = async () => {
   const st = $("serverStatus");
@@ -496,7 +590,7 @@ function renderManage(v) {
   }
   if (mode === "settings") {
     const m = Math.floor((v.remaining || 0) / 60), s = String((v.remaining || 0) % 60).padStart(2, "0");
-    $("settingsTimer").textContent = `Settings close by themselves in ${m}:${s}.`;
+    $("settingsTimer").textContent = `Settings close by themselves in ${m}:${s} unless you use them.`;
     $("sSpace").textContent = v.space || "–";
     $("sDevice").textContent = v.device || "–";
     $("sServer").textContent = v.server || "–";
@@ -515,6 +609,17 @@ function renderManage(v) {
   return !!mode;
 }
 
+function renderTrack(v) {
+  // 1 card, 2 face, 3 movements; all done on the result card.
+  const at = v.state === "idle" || v.state === "scan_qr" ? 1
+    : v.state === "face" ? (v.steps && v.action ? 3 : 2) : v.state === "result" ? 4 : 0;
+  $("track").classList.toggle("hidden", at === 0);
+  [...$("track").children].forEach((li, i) => {
+    li.classList.toggle("done", i + 1 < at);
+    li.classList.toggle("now", i + 1 === at && v.state !== "idle");
+  });
+}
+
 function render(v) {
   const prev = view.state;
   view = v;
@@ -529,7 +634,7 @@ function render(v) {
   $("space").textContent = v.state === "setup" ? "New kiosk" : (v.space || "Attendance");
   $("netpill").classList.toggle("hidden", v.state === "setup");
   $("netdot").className = "dot " + (v.online ? "on" : "off");
-  $("net").textContent = v.revoked ? "Removed by admin" : v.online ? "Online" : "Offline – saving locally";
+  $("net").textContent = v.revoked ? "Removed by admin" : v.online ? "Online" : "Offline, saving here";
   $("queue").classList.toggle("hidden", !v.outbox);
   $("queue").textContent = `${v.outbox} waiting to upload`;
   const stage = $("stage");
@@ -537,19 +642,24 @@ function render(v) {
     + (v.camera_ok === false ? " nocamera" : "");
   if (renderManage(v)) { $("result").classList.add("hidden"); drawBox(null); return; }
 
-  $("msg").textContent = v.camera_ok === false && v.state === "idle"
-    ? "Check-in is paused: the camera is not working" : (v.message || "");
+  const busy = v.state === "scan_qr" || v.state === "face";
+  document.body.classList.toggle("busy", busy);
+  renderTrack(v);
+  const paused = v.camera_ok === false && v.state === "idle";
+  $("msg").classList.toggle("prompt", v.state === "face" && !!v.action);
   let sub = "";
-  if (v.state === "face" && v.name) sub = `Verifying ${v.name}` + (v.remaining != null ? `, ${v.remaining}s left` : "");
-  if (v.state === "scan_qr" && v.remaining != null) sub = `${v.remaining}s`;
+  if (v.state === "face" && v.name) sub = `Checking ${v.name}` + (v.remaining != null ? `, ${v.remaining} s left` : "");
+  if (v.state === "scan_qr" && v.remaining != null) sub = `${v.remaining} s left`;
+  if (v.state === "idle") sub = paused ? "Check-ins start again once the camera works." : "Hold your card up to the camera, or tap Start.";
   $("sub").textContent = sub;
+  $("msg").textContent = paused ? "Check-in is paused: the camera is not working"
+    : v.state === "idle" && v.message === "Show your QR code or tap Start" ? "Ready for your card" : (v.message || "");
   const steps = $("steps");
   if (v.state === "face" && v.steps) {
     steps.classList.remove("hidden");
     steps.innerHTML = Array.from({length: v.steps}, (_, i) =>
       `<span class="${i + 1 < v.step ? "done" : i + 1 === v.step && v.action ? "now" : ""}"></span>`).join("");
   } else steps.classList.add("hidden");
-  const busy = v.state === "scan_qr" || v.state === "face";
   $("start").classList.toggle("hidden", v.state !== "idle" || v.camera_ok === false);
   $("cancel").classList.toggle("hidden", !busy);
   $("qrup").classList.toggle("hidden", !(dev && (v.state === "idle" || v.state === "scan_qr")));
@@ -557,15 +667,25 @@ function render(v) {
 
   const res = $("result");
   if (v.state === "result") {
+    if (prev !== "result") {  // a fresh card each time: the stamp lands once per result
+      const card = $("card");
+      card.style.animation = "none"; $("stamp").style.animation = "none";
+      void card.offsetWidth;
+      card.style.animation = ""; $("stamp").style.animation = "";
+    }
     res.classList.remove("hidden");
-    $("card").className = "card" + (v.ok ? "" : " bad");
-    $("icon").innerHTML = v.ok ? OK_ICON : BAD_ICON;
+    $("card").className = "card " + (v.ok ? "ok" : "bad") + (v.name ? "" : " noname");
     $("rname").textContent = v.name || "";
+    $("rid").textContent = v.external_id || "";
+    $("rid").classList.toggle("hidden", !v.external_id);
     $("rlabel").textContent = v.ok ? v.message : "Not verified";
     $("rtime").textContent = v.ok ? (v.time || "") : "";
+    $("rtime").classList.toggle("hidden", !(v.ok && v.time));
     $("rwhy").textContent = v.ok ? "" : v.message;
+    $("rwhy").classList.toggle("hidden", !!v.ok);
     $("review").classList.toggle("hidden", !v.can_review);
   } else res.classList.add("hidden");
+  tick();
 }
 
 function connect() {

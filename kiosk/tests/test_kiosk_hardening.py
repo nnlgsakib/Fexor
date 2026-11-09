@@ -298,3 +298,21 @@ def test_gallery_cache_follows_roster_object(tmp_path):
 def _no_real_network(monkeypatch):
     """Nothing here may reach a real server."""
     yield
+
+
+def test_kiosk_screens_load_their_bundled_fonts(tmp_path):
+    """Kiosks are often offline: the fonts ship with the app, and both screens must serve them."""
+    import re
+
+    from fexor_kiosk import sessions
+
+    apps = [create_app(paired_store(tmp_path / "a"), _NoCamera(), pipeline=FakePipe()),
+            sessions.create_sessions_app(tmp_path / "s", on_open=lambda p: None, on_quit=lambda: None)]
+    for app in apps:
+        c = TestClient(app)
+        page = c.get("/").text
+        fonts = set(re.findall(r'url\("(/static/fonts/[^"]+)"\)', page))
+        assert fonts
+        for f in fonts:
+            r = c.get(f)
+            assert r.status_code == 200 and r.content[:4] == b"wOF2", f

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Runs after the Fexor Kiosk package is installed.
+set -e
+# A kiosk screen must stay on: turn off screen blanking on Raspberry Pi OS (1 = no blanking).
+if command -v raspi-config >/dev/null 2>&1; then
+  raspi-config nonint do_blanking 1 || true
+fi
+exit 0

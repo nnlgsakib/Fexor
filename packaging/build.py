@@ -92,6 +92,8 @@ def linux(app_dir: Path) -> Path:
     control = (src / "control").read_text().replace("@VERSION@", VERSION).replace("@ARCH@", debarch)
     (debian / "control").write_text(control)
     (debian / "conffiles").write_text("/etc/default/fexor-kiosk\n")
+    shutil.copy(src / "postinst", debian / "postinst")  # turns off screen blanking on a Pi
+    (debian / "postinst").chmod(0o755)
     out = DIST / f"fexor-kiosk_{VERSION}_{debarch}.deb"
     run(["dpkg-deb", "--build", "--root-owner-group", str(root), str(out)])
     return out

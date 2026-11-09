@@ -4,8 +4,7 @@ Architecture: @ARCH@
 Maintainer: Fexor <fexor@example.com>
 Section: misc
 Priority: optional
-Depends: libc6
-Recommends: chromium | chromium-browser
+Depends: libc6, chromium | chromium-browser
 Suggests: libcamera-v4l2
 Description: Fexor attendance kiosk
  Checks people in with a signed QR card and their face, on this device.

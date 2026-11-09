@@ -73,12 +73,18 @@ def ensure_model(name: str, model_dir: Path | None = None) -> Path:
     """Return path to a verified model file, downloading it if missing."""
     spec = MODELS[name]
     model_dir = model_dir or default_model_dir()
-    model_dir.mkdir(parents=True, exist_ok=True)
     path = model_dir / spec.filename
     if path.exists() and _sha256(path) == spec.sha256:
         return path
 
-    fd, tmp_name = tempfile.mkstemp(dir=model_dir, suffix=".part")
+    try:
+        model_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=model_dir, suffix=".part")
+    except OSError as e:
+        # Installed apps ship their models in a read-only folder: a missing or damaged file there
+        # can't be fixed by downloading it again.
+        raise RuntimeError(f"model file {spec.filename} is missing or damaged in {model_dir}, "
+                           "which can't be written to. Reinstall the app.") from e
     os.close(fd)
     tmp = Path(tmp_name)
     try:

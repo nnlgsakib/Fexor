@@ -26,7 +26,14 @@ Server** on the desktop.
 
 - **New Docker install on Windows:** restart if asked, open Docker Desktop once, then double-click
   **Fexor - Start Server**.
-- **Update:** run the same line again. Settings and keys (`deploy/.env`) are kept.
+- **Update:** run the same line again. It backs up the database first, then installs the new
+  version. Settings and keys (`deploy/.env`) are kept. A server stays on its version until you
+  do this, so nothing changes on its own.
+- **Backups:** made every day at 02:00 into `deploy/backups` (newest 14 kept). **Backup Server**
+  and **Restore Server** (Mac/Linux: `./deploy/backup-server.sh`, `./deploy/restore-server.sh`)
+  do it by hand. Copy `deploy/backups` to a USB drive or cloud storage now and then: a backup on
+  the same disk doesn't survive a broken disk. Restoring onto a new computer also works: start a
+  fresh server there, then restore the copied backup folder.
 - **No internet for scripts?** Download `fexor-server.zip` from the release, unzip it and
   double-click **Start Server (Windows).cmd** (Mac/Linux: `./deploy/start-server.sh`).
 
@@ -37,7 +44,7 @@ release. Then open it, click **New session** and show the pairing QR from the ad
 | Kiosk computer | File |
 | --- | --- |
 | Windows 10/11 | `FexorKiosk-Setup-<version>-windows-x64.exe` |
-| Raspberry Pi 5 (64-bit Raspberry Pi OS) | `fexor-kiosk_<version>_arm64.deb` |
+| Raspberry Pi 5 (64-bit Raspberry Pi OS Bookworm or newer) | `fexor-kiosk_<version>_arm64.deb` |
 | Linux PC (Debian, Ubuntu) | `fexor-kiosk_<version>_amd64.deb` |
 | Mac (Apple silicon) | `FexorKiosk-<version>-macos-arm64.dmg` |
 
@@ -203,11 +210,18 @@ it on a real kiosk.
   local-network addresses (private IPs, `localhost`, `.local`/`.lan` names); a server on the
   internet must use HTTPS (own domain or Cloudflare Tunnel mode).
 - **Cloudflare Tunnel by hand:** in `deploy/.env` set `COMPOSE_PROFILES=tunnel`,
-  `CF_TUNNEL_TOKEN=<token>`, `FEXOR_CADDYFILE=Caddyfile.http`, `FEXOR_SECURE_COOKIES=true` and
+  `CF_TUNNEL_TOKEN=<token>`, `FEXOR_CADDYFILE=Caddyfile.tunnel`, `FEXOR_SECURE_COOKIES=true` and
   `FEXOR_PUBLIC_URL=https://<your hostname>`. The tunnel's public hostname points to
   `http://caddy:80`.
-- **Back up** the `db` volume (`pg_dump`) and keep `FEXOR_DATA_KEY` safe and separate from the
-  backups. Without the key, stored faces and two-step sign-in secrets can't be read.
+- **Backups** (`deploy/backup-server.*`) hold a `pg_dump` of the database and a copy of
+  `deploy/.env`. Treat them like the server itself: `FEXOR_DATA_KEY` in that copy unlocks the
+  stored faces and two-step sign-in secrets. `deploy/restore-server.*` takes the key from the backup.
+- **Versions:** the downloaded server files pin the server image (`FEXOR_IMAGE` in
+  `docker-compose.yml`, overridable in `.env`). Starting the server works offline once the image
+  is on the computer.
+- **Health:** the server's health check includes the database; the worker writes a heartbeat file
+  that its own health check reads (`docker compose ps` shows both). Container logs rotate at
+  3 × 10 MB per service.
 - The `server` container runs migrations on start. Scale API processes with `FEXOR_WORKERS`.
 
 ### Kiosk notes
@@ -225,8 +239,9 @@ set `PI_CAMERA_MODULE=1` in `/etc/default/fexor-kiosk` and install `libcamera-v4
   that still can't be uploaded are deleted, and the screen says how many.
 - **App data and log:** `%LOCALAPPDATA%\Fexor Kiosk` (Windows), `~/Library/Application Support/Fexor Kiosk`
   (Mac), `~/.local/share/Fexor Kiosk` (Linux). `kiosk.log` and `crash.log` are there.
-- **Script installs** (`deploy/kiosk/install-linux.sh`, `install-windows.ps1`) still work for
-  machines where you prefer running from source.
+- **After a power cut** the kiosk app starts on the session list and opens the last session by
+  itself after 15 seconds. The Linux package turns off screen blanking on Raspberry Pi OS.
+- **Developers** can still run a kiosk from source: see [docs/SETUP.md](docs/SETUP.md).
 
 ### Releasing
 
@@ -275,14 +290,17 @@ server/   FastAPI app, database models and migrations, rules engine, worker, CLI
 kiosk/    camera, verification state machine, offline store, sync, kiosk web page
 web/admin React + Mantine admin panel
 packaging/ desktop kiosk app build (PyInstaller spec, Windows/Linux/macOS installers)
-deploy/   Dockerfile companions: compose file, Caddyfile, kiosk installers
+deploy/   compose file, Caddyfiles, start/stop/backup/restore/reset scripts
 ```
 
 ## Tests
 
 ```bash
-uv run pytest        # needs the Postgres container from Quick start
+# A throwaway Postgres for the server tests (any port; never your real server's database):
+docker run -d --name fexor-test-pg -p 55432:5432 -e POSTGRES_USER=fexor -e POSTGRES_PASSWORD=fexor postgres:16-alpine
+FEXOR_TEST_DB_ADMIN=postgresql://fexor:fexor@localhost:55432/fexor uv run pytest
 uv run ruff check .
+cd web/admin && npm test         # admin panel unit tests
 ```
 
 The tests cover the rules engine (late, half day, overnight shifts, daylight-saving changes,

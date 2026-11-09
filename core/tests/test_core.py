@@ -183,3 +183,18 @@ def test_downloaded_models_are_readable_by_other_users(tmp_path, monkeypatch):
                         lambda url, dest: Path(dest).write_bytes(data))
     path = models.ensure_model("tiny", tmp_path)
     assert path.stat().st_mode & stat.S_IROTH
+
+
+def test_damaged_model_in_read_only_folder_says_reinstall(tmp_path, monkeypatch):
+    import tempfile
+
+    from fexor_core import models
+
+    (tmp_path / models.MODELS["yunet"].filename).write_bytes(b"damaged")
+
+    def read_only(*a, **kw):
+        raise PermissionError("read-only file system")
+
+    monkeypatch.setattr(tempfile, "mkstemp", read_only)
+    with pytest.raises(RuntimeError, match="Reinstall the app"):
+        models.ensure_model("yunet", tmp_path)

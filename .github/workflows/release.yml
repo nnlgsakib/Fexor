@@ -14,7 +14,11 @@ env:
   VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.0.0-dev' }}
 
 jobs:
+  tests:  # nothing is published unless every test passes
+    uses: ./.github/workflows/ci.yml
+
   server-image:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +48,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   kiosk:
+    needs: tests
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +82,7 @@ jobs:
             packaging/dist/*.deb
 
   server-bundle:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -93,8 +99,8 @@ jobs:
 
   release:
     needs: [server-image, kiosk, server-bundle]
-    # A failed kiosk build (one OS) must not hold back the server release.
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.server-image.result == 'success' && needs.server-bundle.result == 'success' }}
+    # Only a complete release: every kiosk installer built and the server image published.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

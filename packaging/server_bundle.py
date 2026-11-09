@@ -19,6 +19,8 @@ FILES = [
     "Start Server (Windows).cmd",
     "Stop Server (Windows).cmd",
     "Reset Server (Windows).cmd",
+    "Backup Server (Windows).cmd",
+    "Restore Server (Windows).cmd",
     "deploy/docker-compose.yml",
     "deploy/Caddyfile",
     "deploy/Caddyfile.http",
@@ -29,6 +31,10 @@ FILES = [
     "deploy/stop-server.sh",
     "deploy/reset-server.ps1",
     "deploy/reset-server.sh",
+    "deploy/backup-server.ps1",
+    "deploy/backup-server.sh",
+    "deploy/restore-server.ps1",
+    "deploy/restore-server.sh",
 ]
 
 README = """Fexor server {version}
@@ -44,9 +50,17 @@ README = """Fexor server {version}
 Settings and keys are saved in deploy/.env. Keep a copy of that file somewhere safe: it holds the
 key that protects stored face data. Without it, a restored backup cannot be read.
 
-Stop the server:   "Stop Server (Windows).cmd"   or ./deploy/stop-server.sh
-Delete everything: "Reset Server (Windows).cmd"  or ./deploy/reset-server.sh  (asks first, no undo)
-Update:            run the start script again; it downloads the newest server.
+Stop the server:   "Stop Server (Windows).cmd"     or ./deploy/stop-server.sh
+Back up now:       "Backup Server (Windows).cmd"   or ./deploy/backup-server.sh
+Restore a backup:  "Restore Server (Windows).cmd"  or ./deploy/restore-server.sh  (asks first)
+Delete everything: "Reset Server (Windows).cmd"    or ./deploy/reset-server.sh    (asks first)
+
+Backups: one is made every day at 02:00 into deploy/backups (the newest 14 are kept). Copy
+that folder to a USB drive or cloud storage now and then: a backup on the same computer does
+not survive a broken disk.
+
+Update: run the one-line installer again (see the Fexor README). It backs up first, then
+installs the new version. This server stays on version {version} until you do.
 
 Kiosks: install the Fexor Kiosk app on each verification computer, open it, choose
 "New session" and scan the pairing QR from the admin panel (Kiosks, Add kiosk).
@@ -64,6 +78,12 @@ def main() -> None:
                 # No source here, so no "build from source" option: always use the published image.
                 data, n = re.subn(rb"\r?\n[ \t]*(# Published image;|build: \{)[^\n]*", b"", data)
                 assert n == 2, "docker-compose.yml: build lines not found"
+                if re.fullmatch(r"v?\d+\.\d+\.\d+", VERSION):  # a real release, not a test build
+                    # Each install stays on the version it was installed with; updating is a
+                    # deliberate step (installer: backup first, then the new version).
+                    tag = VERSION.removeprefix("v").encode()
+                    data, n = re.subn(rb"fexor-server:latest\}", b"fexor-server:" + tag + b"}", data)
+                    assert n == 2, "docker-compose.yml: image lines not found"
             info = zipfile.ZipInfo(f"{top}/{name}", date_time=(2020, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             # Unix permissions so the .sh scripts stay runnable after unzip on Mac/Linux.

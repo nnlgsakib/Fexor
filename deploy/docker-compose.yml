@@ -1,16 +1,25 @@
 # Fexor server: database, API + admin panel, background worker, web front.
-# Easiest: run "Start Server" from the project folder; it writes .env for you.
+# Easiest: run "Start Server"; it writes .env for you.
 # Manual: copy .env.example to .env, fill it in, then:  docker compose up -d
 #
 # Three ways to reach it (set in .env):
 #   office network   FEXOR_CADDYFILE=Caddyfile.http                          plain HTTP, port 80
 #   own domain       FEXOR_CADDYFILE=Caddyfile                               HTTPS via Let's Encrypt
-#   Cloudflare       FEXOR_CADDYFILE=Caddyfile.http + COMPOSE_PROFILES=tunnel + CF_TUNNEL_TOKEN
+#   Cloudflare       FEXOR_CADDYFILE=Caddyfile.tunnel + COMPOSE_PROFILES=tunnel + CF_TUNNEL_TOKEN
 #                    HTTPS through a Cloudflare Tunnel, no router ports to open
+#
+# Backups: deploy/backup-server.(ps1|sh), restore with deploy/restore-server.(ps1|sh).
+
+# Container logs rotate: 3 files of 10 MB per service, so a busy year can't fill the disk.
+x-logging: &logging
+  driver: local
+  options: { max-size: 10m, max-file: "3" }
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_USER: fexor
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
@@ -26,26 +35,37 @@ services:
     image: ${FEXOR_IMAGE:-ghcr.io/nnlgsakib/fexor-server:latest}
     build: { context: .., dockerfile: Dockerfile }
     restart: unless-stopped
+    logging: *logging
     depends_on: { db: { condition: service_healthy } }
     environment: &env
       FEXOR_DATABASE_URL: postgresql+asyncpg://fexor:${POSTGRES_PASSWORD}@db:5432/fexor
       FEXOR_DATA_KEY: ${FEXOR_DATA_KEY:?set FEXOR_DATA_KEY}
       FEXOR_SECURE_COOKIES: ${FEXOR_SECURE_COOKIES:-true}
       FEXOR_PUBLIC_URL: ${FEXOR_PUBLIC_URL:-}
+      # Only Caddy can reach this port (it isn't published), so its forwarded address is
+      # trusted; Caddy itself decides which X-Forwarded-For to believe (see the Caddyfiles).
       FORWARDED_ALLOW_IPS: "*"
+      FEXOR_WORKER_HEARTBEAT: /tmp/fexor-worker-heartbeat
 
   worker:
     image: ${FEXOR_IMAGE:-ghcr.io/nnlgsakib/fexor-server:latest}
     restart: unless-stopped
-    depends_on: [server]
+    logging: *logging
+    # The server runs the database migrations on start; the worker waits for them.
+    depends_on: { server: { condition: service_healthy } }
     environment: *env
     command: ["fexor-server", "worker"]
     healthcheck:
-      disable: true  # the image's check is for the web server; the worker serves no HTTP
+      # The worker touches its heartbeat file after every loop (every few seconds).
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(time.time() - os.path.getmtime('/tmp/fexor-worker-heartbeat') > 120)"]
+      interval: 30s
+      start_period: 60s
+      retries: 3
 
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *logging
     depends_on: [server]
     ports: ["80:80", "443:443"]
     environment:
@@ -59,9 +79,10 @@ services:
     # Only with COMPOSE_PROFILES=tunnel. In the Cloudflare dashboard (Zero Trust, Networks,
     # Tunnels) create a tunnel, add a public hostname pointing to http://caddy:80, and put
     # its token in CF_TUNNEL_TOKEN.
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.10.7
     profiles: ["tunnel"]
     restart: unless-stopped
+    logging: *logging
     depends_on: [caddy]
     command: ["tunnel", "--no-autoupdate", "run"]
     environment:

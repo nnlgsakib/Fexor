@@ -30,11 +30,19 @@ for v in $volumes; do echo "  - Docker volume $v"; done
 for f in "${files[@]}"; do echo "  - $f"; done
 echo
 if [[ -z "$containers$volumes" && ${#files[@]} -eq 0 ]]; then echo "Nothing to delete: there is no Fexor server here."; exit 0; fi
-echo "There is no undo. Back up deploy/.env and the database first if you might need them."
+echo "There is no undo. A final backup is saved in deploy/backups first (that folder is kept)."
 answer=${FEXOR_RESET_CONFIRM:-}
 [[ -z "$answer" ]] && read -rp "Type DELETE to continue, or anything else to cancel: " answer
 [[ "$answer" == "DELETE" ]] || { echo "Cancelled. Nothing was deleted."; exit 0; }
 
+if [[ -n "$containers" && -f .env ]]; then
+  echo "Saving a final backup first..."
+  if ! ./backup-server.sh; then
+    go=${FEXOR_RESET_CONFIRM:+yes}
+    [[ -z "$go" ]] && read -rp "The backup failed. Delete anyway? Type yes to continue: " go
+    [[ "$go" == "yes" ]] || { echo "Cancelled. Nothing was deleted."; exit 0; }
+  fi
+fi
 [[ -n "$containers" ]] && docker rm -f $containers >/dev/null && echo "Removed the server containers."
 for v in $volumes; do docker volume rm "$v" >/dev/null && echo "Deleted volume $v."; done
 for f in "${files[@]}"; do rm -rf "$f" && echo "Deleted $f."; done

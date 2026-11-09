@@ -137,9 +137,27 @@ function Update-OfficeAddress {
     Write-Host ""
 }
 
+function Image-Present {
+    # This install's server image (pinned to a version in the downloaded server files).
+    $img = (& docker compose --env-file "$envFile" config --images 2>$null | Where-Object { $_ -like "*fexor-server*" } | Select-Object -First 1)
+    if (-not $img) { return $false }
+    & docker image inspect "$img" 2>&1 | Out-Null
+    return $LASTEXITCODE -eq 0
+}
+
+function Register-Backup {
+    # A daily backup at 02:00 (Docker Desktop must be running, which it is while you are signed in).
+    $id = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($deploy))).Replace("-", "").Substring(0, 8)
+    $script = Join-Path $deploy "backup-server.ps1"
+    $action = "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"`$env:FEXOR_UNATTENDED='1'; & '$script'`""
+    & schtasks /Create /F /SC DAILY /ST 02:00 /TN "Fexor daily backup $id" /TR $action 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Host "Daily backup at 02:00 is set up (deployackups)." }
+}
+
 function Start-Stack {
     Write-Host "Starting... the first time this takes a few minutes." -ForegroundColor Cyan
-    if ((Compose-Quiet pull server) -eq 0) {
+    # Already downloaded: start without going online, so a restart works without internet.
+    if ((Image-Present) -or (Compose-Quiet pull server) -eq 0) {
         $rc = Compose up -d
     } elseif (-not (Test-Path (Join-Path $deploy "..\Dockerfile"))) {
         Fail "Could not download the Fexor server. Check this computer's internet connection and try again."
@@ -197,7 +215,7 @@ try {
     Update-OfficeAddress
     Update-ProxyConfig
     Push-Location $deploy
-    try { Start-Stack; Show-Result } finally { Pop-Location }
+    try { Start-Stack; Register-Backup; Show-Result } finally { Pop-Location }
 } catch {
     Fail "Something went wrong: $($_.Exception.Message)"
 }

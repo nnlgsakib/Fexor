@@ -56,7 +56,7 @@ if (-not $containers.Count -and -not $volumes.Count -and -not $files.Count) {
     Pause-Window
     exit 0
 }
-Write-Host "There is no undo. Back up deploy\.env and the database first if you might need them." -ForegroundColor Yellow
+Write-Host "There is no undo. A final backup is saved in deploy\backups first (that folder is kept)." -ForegroundColor Yellow
 $answer = if ($unattended) { $env:FEXOR_RESET_CONFIRM } else { Read-Host "Type DELETE to continue, or anything else to cancel" }
 if ($answer -cne "DELETE") {
     Write-Host "Cancelled. Nothing was deleted." -ForegroundColor Green
@@ -64,6 +64,16 @@ if ($answer -cne "DELETE") {
     exit 0
 }
 
+if ($containers.Count -and (Test-Path $envFile)) {
+    Write-Host "Saving a final backup first..."
+    $env:FEXOR_UNATTENDED = "1"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $deploy "backup-server.ps1")
+    $env:FEXOR_UNATTENDED = if ($unattended) { "1" } else { "" }
+    if ($LASTEXITCODE -ne 0) {
+        $go = if ($unattended) { "yes" } else { Read-Host "The backup failed. Delete anyway? Type yes to continue" }
+        if ($go -ne "yes") { Write-Host "Cancelled. Nothing was deleted." -ForegroundColor Green; Pause-Window; exit 0 }
+    }
+}
 if ($containers.Count) {
     & docker rm -f $containers 2>&1 | Out-Null
     Write-Host "Removed the server containers."

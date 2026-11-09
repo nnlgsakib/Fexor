@@ -15,6 +15,12 @@ dir="${FEXOR_DIR:-$HOME/fexor-server}"
 source="${FEXOR_DOWNLOAD:-https://github.com/nnlgsakib/Fexor/releases/latest/download}"
 
 echo "Installing the Fexor server to $dir"
+if [ -f "$dir/deploy/.env" ] && [ "${FEXOR_NO_START:-}" != "1" ] && command -v docker >/dev/null \
+   && [ -x "$dir/deploy/backup-server.sh" ]; then
+  # Updating an existing server: keep a backup of the database from before the update.
+  echo "Backing up the current server before updating..."
+  "$dir/deploy/backup-server.sh" || true
+fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "$source/fexor-server.zip" -o "$tmp/fexor-server.zip"

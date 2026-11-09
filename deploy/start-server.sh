@@ -48,10 +48,12 @@ FEXOR_TLS=$email
 FEXOR_SECURE_COOKIES=true
 FEXOR_PUBLIC_URL=https://$domain"
   else
+    ip=$(lan_ip || true)
+    [[ -n "$ip" ]] || need "This computer has no network address. Connect it to the office network, then run this again."
     cfg+="
 FEXOR_CADDYFILE=Caddyfile.http
 FEXOR_SECURE_COOKIES=false
-FEXOR_PUBLIC_URL=http://$(lan_ip || echo localhost)"
+FEXOR_PUBLIC_URL=http://$ip"
   fi
   (umask 077 && printf '%s
 ' "$cfg" > .env)
@@ -61,10 +63,23 @@ fi
 if grep -q '^COMPOSE_PROFILES=.*tunnel' .env && grep -qx 'FEXOR_CADDYFILE=Caddyfile.http' .env; then
   sed -i.bak 's/^FEXOR_CADDYFILE=Caddyfile\.http$/FEXOR_CADDYFILE=Caddyfile.tunnel/' .env && rm -f .env.bak
 fi
+# Office mode stores this computer's IP address. If the router handed out a new one, follow it.
+old=$(grep '^FEXOR_PUBLIC_URL=http://' .env | sed 's#^FEXOR_PUBLIC_URL=http://##' || true)
+if [[ "$old" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && ! grep -q '^COMPOSE_PROFILES=.*tunnel' .env; then
+  new=$(lan_ip || true)
+  if [[ -n "$new" && "$new" != "$old" ]] && ! { command -v ip >/dev/null && ip -4 addr | grep -q "inet $old/"; }; then
+    sed -i.bak "s#^FEXOR_PUBLIC_URL=http://$old\$#FEXOR_PUBLIC_URL=http://$new#" .env && rm -f .env.bak
+    say "This computer's network address changed from $old to $new. Kiosks paired with the old
+address: open their settings (Settings QR) and show the pairing QR, or enter http://$new.
+To stop this happening, reserve this computer's address in your router (DHCP reservation)."
+  fi
+fi
 url=$(grep '^FEXOR_PUBLIC_URL=' .env | cut -d= -f2-)
 
 say "Starting... the first time this takes a few minutes."
-if docker compose --env-file .env pull server; then
+image=$(docker compose --env-file .env config --images 2>/dev/null | grep fexor-server | head -1 || true)
+# Already downloaded: start without going online, so a restart works without internet.
+if { [[ -n "$image" ]] && docker image inspect "$image" >/dev/null 2>&1; } || docker compose --env-file .env pull server; then
   docker compose --env-file .env up -d
 elif [ ! -f ../Dockerfile ]; then
   echo "Could not download the Fexor server. Check this computer's internet connection and try again." >&2
@@ -74,11 +89,24 @@ else
   docker compose --env-file .env up -d --build
 fi
 echo "Waiting for the server to be ready..."
+ready=""
 for _ in $(seq 120); do
-  docker compose --env-file .env exec -T server python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')" >/dev/null 2>&1 && break
+  if docker compose --env-file .env exec -T server python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')" >/dev/null 2>&1; then
+    ready=1; break
+  fi
   sleep 2
 done
-code=$(docker compose --env-file .env exec -T server fexor-server setup-code | tr -d '\r\n')
+[[ -n "$ready" ]] || need "The server did not become ready. Run 'docker compose -f deploy/docker-compose.yml logs server' to see why."
+
+# Daily backup at 02:00 into deploy/backups (once per server folder).
+if command -v crontab >/dev/null; then
+  tag="fexor-backup:$PWD"
+  if ! crontab -l 2>/dev/null | grep -qF "$tag"; then
+    { crontab -l 2>/dev/null || true; echo "0 2 * * * cd '$PWD' && ./backup-server.sh >/dev/null 2>&1 # $tag"; } | crontab - \
+      && echo "Daily backup at 02:00 is set up (deploy/backups)."
+  fi
+fi
+code=$(docker compose --env-file .env exec -T server fexor-server setup-code 2>/dev/null | tr -d '\r\n' || true)
 
 open_url() { (xdg-open "$1" || open "$1") >/dev/null 2>&1 || true; }
 say "Fexor is running at $url"

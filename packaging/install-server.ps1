@@ -18,6 +18,14 @@ $source = if ($env:FEXOR_DOWNLOAD) { $env:FEXOR_DOWNLOAD } else {
     "https://github.com/nnlgsakib/Fexor/releases/latest/download" }
 
 Write-Host "Installing the Fexor server to $dir" -ForegroundColor Cyan
+$update = Test-Path (Join-Path $dir "deploy\.env")
+if ($update -and $env:FEXOR_NO_START -ne "1" -and (Get-Command docker -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $dir "deploy\backup-server.ps1"))) {
+    # Updating an existing server: keep a backup of the database from before the update.
+    Write-Host "Backing up the current server before updating..."
+    $env:FEXOR_UNATTENDED = "1"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir "deploy\backup-server.ps1")
+    $env:FEXOR_UNATTENDED = ""
+}
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("fexor-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {

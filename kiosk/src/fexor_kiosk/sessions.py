@@ -17,6 +17,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
 STATIC = Path(__file__).parent / "static"
+# After a reboot or power cut nobody is there to tap: the list opens the last session itself.
+AUTO_OPEN_SECONDS = 15
 _LEGACY_FILES = ("kiosk.db", "kiosk.db-wal", "kiosk.db-shm", "device.key")
 
 
@@ -79,7 +81,12 @@ def new_session(root: Path) -> Path:
 
 def create_sessions_app(root: Path, on_open, on_quit) -> FastAPI:
     """Start screen: list saved sessions, open one, start a new one, delete, exit."""
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+    from .app import allowed_hosts
+
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts())
 
     def check_origin(request: Request) -> None:
         origin, host = request.headers.get("origin"), request.headers.get("host")
@@ -96,7 +103,10 @@ def create_sessions_app(root: Path, on_open, on_quit) -> FastAPI:
 
     @app.get("/api/sessions")
     async def sessions():
-        return {"sessions": list_sessions(root), "now": time.time()}
+        items = list_sessions(root)
+        last = next((s["id"] for s in items if s["paired"]), None)  # newest paired session
+        return {"sessions": items, "now": time.time(), "auto_open": last,
+                "auto_open_seconds": AUTO_OPEN_SECONDS}
 
     @app.post("/api/sessions/{session_id}/open")
     async def open_session(session_id: str, request: Request):

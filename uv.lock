@@ -478,6 +478,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "fexor-core" },
     { name = "httpx" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -492,6 +493,7 @@ requires-dist = [
     { name = "fexor-core", editable = "core" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pywebview", marker = "sys_platform != 'linux' and extra == 'desktop'", specifier = ">=6.2" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
 provides-extras = ["desktop"]

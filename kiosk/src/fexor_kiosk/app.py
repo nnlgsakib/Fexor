@@ -16,11 +16,12 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .camera import Camera, snapshot
 from .store import Store
 from .sync import Syncer, change_server, enroll, parse_pairing
-from .verifier import Pipeline, RealPipeline, Verifier
+from .verifier import SETTINGS_SECONDS, Pipeline, RealPipeline, Verifier
 
 STATIC = Path(__file__).parent / "static"
 log = logging.getLogger("fexor.kiosk")
@@ -54,6 +55,14 @@ class CameraIn(BaseModel):
     source: str
 
 
+def allowed_hosts() -> list[str]:
+    """The kiosk page is only ever opened as 127.0.0.1 / localhost. Refusing any other Host
+    header stops DNS rebinding: a web page that points its own domain at 127.0.0.1 could
+    otherwise watch the camera or pair the kiosk to its own server."""
+    raw = os.environ.get("FEXOR_KIOSK_ALLOWED_HOSTS", "127.0.0.1,localhost")
+    return [h.strip() for h in raw.split(",") if h.strip()]
+
+
 def _same_origin(origin: str | None, host: str | None) -> bool:
     # Only the kiosk page itself may drive the kiosk (blocks other sites in the browser).
     return origin is None or origin in (f"http://{host}", f"https://{host}")
@@ -61,22 +70,28 @@ def _same_origin(origin: str | None, host: str | None) -> bool:
 
 def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
                pipeline: Pipeline | None = None, on_quit=None, on_switch=None) -> FastAPI:
-    verifier = Verifier(store, pipeline or RealPipeline(model_dir), camera)
-    dev = dev_mode()
     syncer = Syncer(store, extra_info=lambda: {"camera_ok": camera.ok})
+    verifier = Verifier(store, pipeline or RealPipeline(model_dir), camera,
+                        revoked=lambda: syncer.status.get("error") == "revoked",
+                        clock_verified=lambda: syncer.clock_verified)
+    dev = dev_mode()
     pair: dict = {"status": "idle", "message": ""}
     last_failed: dict = {"text": "", "at": 0.0}
     loop_ref: dict = {}
 
     def unlocked() -> bool:
-        """Local settings are open before pairing, or after scanning an admin settings QR."""
-        return not store.has("token") or verifier.settings_open()
+        """Local settings are open before pairing, after scanning an admin settings QR, and
+        while a paired kiosk has never synced (no keys yet to check a settings QR with, so it
+        would otherwise be stuck: no way to fix the server address or go back)."""
+        return not store.has("token") or store.roster is None or verifier.settings_open()
 
     def require_unlocked(request: Request) -> None:
         if not _same_origin(request.headers.get("origin"), request.headers.get("host")):
             raise HTTPException(403, "bad origin")
         if not unlocked():
             raise HTTPException(403, "settings are locked; scan a settings QR from the admin panel")
+        if verifier.settings_open():  # in use: keep it open
+            verifier.settings_until = max(verifier.settings_until, verifier.clock() + SETTINGS_SECONDS)
 
     async def pair_with(text: str) -> None:
         try:
@@ -87,7 +102,7 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
             syncer.poke()
         except Exception as e:  # noqa: BLE001 - shown to the person setting up
             last_failed.update(text=text, at=time.monotonic())
-            msg = str(e) if isinstance(e, ValueError) else f"cannot reach the server ({type(e).__name__})"
+            msg = str(e) if isinstance(e, ValueError) else "Can't reach the server. Check the network."
             pair.update(status="error", message=msg)
 
     def on_pairing(text: str) -> None:  # called from the verifier thread
@@ -99,6 +114,26 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
         asyncio.run_coroutine_threadsafe(pair_with(text), loop_ref["loop"])
 
     verifier.on_pairing = on_pairing
+    server_change: dict = {"status": "idle", "message": "", "text": ""}
+
+    async def change_with(text: str) -> None:
+        try:
+            url, _code = parse_pairing(text)
+            server_change.update(status="connecting", message=f"Checking {url}…")
+            await change_server(store, url)
+            server_change.update(status="done", message=f"Server address changed to {url}.")
+            syncer.poke()
+        except Exception as e:  # noqa: BLE001 - shown on the settings screen
+            server_change.update(status="error",
+                                 message=str(e) if isinstance(e, ValueError) else "Can't reach the server.")
+
+    def on_server_qr(text: str) -> None:  # verifier thread, settings open
+        if server_change["status"] == "connecting" or text == server_change["text"] or "loop" not in loop_ref:
+            return
+        server_change.update(status="connecting", text=text)
+        asyncio.run_coroutine_threadsafe(change_with(text), loop_ref["loop"])
+
+    verifier.on_server_qr = on_server_qr
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -114,6 +149,7 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
         camera.stop()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts())
     app.state.verifier, app.state.syncer = verifier, syncer
 
     @app.get("/")
@@ -240,7 +276,7 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         except Exception as e:  # noqa: BLE001 - network problems, shown to the person setting up
-            raise HTTPException(400, f"cannot reach the server ({type(e).__name__})") from e
+            raise HTTPException(400, "Can't reach the server. Check the address and the network.") from e
         pair.update(status="done", message=f"Connected to {data['space_name']}")
         syncer.poke()
         return {"space_name": data["space_name"]}
@@ -268,7 +304,11 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
                         "outbox": store.outbox_size(), "camera_ok": camera.ok,
                         "space": store.get("space_name"), "pair": dict(pair),
                         "server": store.get("server_url"), "device": store.get("device_name"),
-                        "camera": str(camera.source)}
+                        "camera": str(camera.source), "server_change": {
+                            k: server_change[k] for k in ("status", "message")},
+                        "revoked": syncer.status.get("error") == "revoked",
+                        "stuck": store.stuck_count(),
+                        "tz": (store.roster.space.get("timezone") if store.roster else None)}
                 if view != last_view:
                     await sock.send_text(json.dumps(view))
                     if view.get("state") == "result" and (last_view or {}).get("state") != "result":

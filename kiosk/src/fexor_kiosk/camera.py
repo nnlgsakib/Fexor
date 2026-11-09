@@ -54,8 +54,16 @@ class Camera:
         self._seq = 0
         self._cond = threading.Condition()
         self._stop = threading.Event()
-        self.ok = False
+        self._ok = False
+        self._last_frame_at = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True, name="camera")
+
+    STALE_SECONDS = 3.0
+
+    @property
+    def ok(self) -> bool:
+        """Working camera: opened, and a frame arrived recently (a driver can hang in read())."""
+        return self._ok and time.monotonic() - self._last_frame_at < self.STALE_SECONDS
 
     def start(self) -> Camera:
         self._thread.start()
@@ -71,7 +79,7 @@ class Camera:
     def set_source(self, source: str | int) -> None:
         """Switch camera without restarting the kiosk."""
         self.source = parse_source(source)
-        self.ok = False
+        self._ok = False
         self._reopen.set()
 
     def _open(self) -> cv2.VideoCapture:
@@ -91,13 +99,13 @@ class Camera:
             if cap is None or not cap.isOpened():
                 cap = self._open()
                 if not cap.isOpened():
-                    self.ok = False
+                    self._ok = False
                     log.warning("camera %s not available, retrying", self.source)
                     time.sleep(2)
                     continue
             ok, frame = cap.read()
             if not ok:
-                self.ok = False
+                self._ok = False
                 cap.release()
                 cap = None
                 time.sleep(0.5)
@@ -105,7 +113,7 @@ class Camera:
             if frame.shape[1] > self.width:  # some cameras ignore the size hint
                 scale = self.width / frame.shape[1]
                 frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-            self.ok = True
+            self._ok, self._last_frame_at = True, time.monotonic()
             with self._cond:
                 self._frame, self._seq = frame, self._seq + 1
                 self._cond.notify_all()
@@ -113,7 +121,12 @@ class Camera:
             cap.release()
 
     def latest(self, after_seq: int = -1, timeout: float = 1.0) -> tuple[int, np.ndarray | None]:
-        """Newest frame with seq > after_seq (waits up to timeout)."""
+        """Newest frame with seq > after_seq (waits up to timeout), else (seq, None).
+
+        Never hands back an old frame: if the camera froze with a QR card in view, the kiosk
+        would keep reading that card and failing face checks on a still picture.
+        """
         with self._cond:
-            self._cond.wait_for(lambda: self._seq > after_seq, timeout=timeout)
+            if not self._cond.wait_for(lambda: self._seq > after_seq, timeout=timeout):
+                return self._seq, None
             return self._seq, self._frame

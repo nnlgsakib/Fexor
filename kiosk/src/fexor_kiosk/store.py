@@ -45,15 +45,25 @@ def _load_key(path: Path) -> bytes:
     if path.exists():
         return path.read_bytes()
     key = secrets.token_bytes(32)
-    path.write_bytes(key)
+    # Written to a temp file and renamed: a power cut mid-write must not leave a half key,
+    # which would make everything sealed with it unreadable.
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "wb") as f:
+        f.write(key)
+        f.flush()
+        os.fsync(f.fileno())
     try:
-        os.chmod(path, 0o600)
+        os.chmod(tmp, 0o600)
     except OSError:
         pass  # Windows: rely on the user profile ACLs
+    tmp.replace(path)
     return key
 
 
 class Store:
+    MAX_ATTEMPTS = 5  # an event the server keeps refusing is set aside after this many tries
+    SNAPSHOT_DAYS = 30  # face snapshots in the offline queue are dropped after this
+
     def __init__(self, data_dir: Path):
         data_dir.mkdir(parents=True, exist_ok=True)
         self.key = _load_key(data_dir / "device.key")
@@ -61,7 +71,8 @@ class Store:
         self._db = sqlite3.connect(data_dir / "kiosk.db", check_same_thread=False,
                                    isolation_level=None)
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=NORMAL")
+        # FULL: a check-in shown as "Checked in" must survive a power cut.
+        self._db.execute("PRAGMA synchronous=FULL")
         self._db.executescript("""
             CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v BLOB);
             CREATE TABLE IF NOT EXISTS outbox (
@@ -120,20 +131,53 @@ class Store:
         return parse_roster(json.loads(raw))
 
     # ---------- outbox ----------
+    # Payloads are sealed: they hold who checked in and, optionally, a face snapshot.
+    def _seal_event(self, event: dict[str, Any]) -> bytes:
+        return crypto.seal(self.key, json.dumps(event).encode(), b"outbox")
+
+    def _open_event(self, payload: Any) -> dict[str, Any]:
+        if isinstance(payload, str):  # written by an older version, before sealing
+            return json.loads(payload)
+        return json.loads(crypto.unseal(self.key, payload, b"outbox"))
+
     def enqueue(self, event: dict[str, Any]) -> None:
         with self._lock:
             self._db.execute("INSERT OR IGNORE INTO outbox (id, payload, created) VALUES (?,?,?)",
-                             (event["id"], json.dumps(event), time.time()))
+                             (event["id"], self._seal_event(event), time.time()))
 
     def pending(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT payload FROM outbox ORDER BY created LIMIT ?", (limit,)).fetchall()
-        return [json.loads(r[0]) for r in rows]
+                "SELECT payload FROM outbox WHERE attempts < ? ORDER BY created LIMIT ?",
+                (self.MAX_ATTEMPTS, limit)).fetchall()
+        return [self._open_event(r[0]) for r in rows]
 
     def ack(self, ids: list[str]) -> None:
         with self._lock:
             self._db.executemany("DELETE FROM outbox WHERE id=?", [(i,) for i in ids])
+
+    def refused(self, ids: list[str]) -> None:
+        """The server rejected these events (bad data, version mismatch): count the try."""
+        with self._lock:
+            self._db.executemany("UPDATE outbox SET attempts = attempts + 1 WHERE id=?",
+                                 [(i,) for i in ids])
+
+    def stuck_count(self) -> int:
+        with self._lock:
+            return self._db.execute("SELECT COUNT(*) FROM outbox WHERE attempts >= ?",
+                                    (self.MAX_ATTEMPTS,)).fetchone()[0]
+
+    def drop_old_snapshots(self) -> None:
+        """Face snapshots are only for a prompt review; don't keep them on a kiosk for long."""
+        cutoff = time.time() - self.SNAPSHOT_DAYS * 86400
+        with self._lock:
+            rows = self._db.execute("SELECT id, payload FROM outbox WHERE created < ?",
+                                    (cutoff,)).fetchall()
+            for eid, payload in rows:
+                event = self._open_event(payload)
+                if event.pop("snapshot_jpeg_b64", None) is not None:
+                    self._db.execute("UPDATE outbox SET payload=? WHERE id=?",
+                                     (self._seal_event(event), eid))
 
     def clear_outbox(self) -> None:
         with self._lock:

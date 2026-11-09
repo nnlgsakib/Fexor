@@ -41,7 +41,20 @@ LOCKOUT_FAILURES = 3
 LOCKOUT_WINDOW = 600.0
 LOCKOUT_SECONDS = 300.0
 MIN_FACE_PX = 80
-SETTINGS_SECONDS = 600
+SETTINGS_SECONDS = 120  # extended each time the settings are used
+CLOCK_JUMP = 3600.0  # a bigger step in the wall clock (NTP after boot) resets running timers
+# Only real verification failures lock a card. Timeouts (someone in the way) and kiosk errors
+# must not lock out a person who did nothing wrong.
+LOCKOUT_REASONS = {"face_mismatch", "face_matches_other", "liveness_failed", "face_changed",
+                   "challenge"}
+
+QUALITY_HINTS = {
+    "face_too_small": "Come a little closer",
+    "blurry": "Hold still",
+    "too_dark": "Move to where there is more light",
+    "too_bright": "Too much light behind you or on your face",
+    "not_frontal": "Look straight at the camera",
+}
 
 PROMPTS = {
     Action.BLINK: "Blink your eyes",
@@ -63,6 +76,7 @@ FAIL_MESSAGES = {
     "face_changed": "A different face appeared. Please try again alone.",
     "challenge": "Movement check failed. Please follow the instructions.",
     "timeout": "Verification timed out. Please try again.",
+    "error": "Something went wrong on this kiosk. Please try again.",
 }
 
 
@@ -136,11 +150,17 @@ class Session:
 
 
 class Verifier:
-    def __init__(self, store: Store, pipeline: Pipeline, camera=None, clock=time.time):
+    def __init__(self, store: Store, pipeline: Pipeline, camera=None, clock=time.time,
+                 revoked: Callable[[], bool] | None = None,
+                 clock_verified: Callable[[], bool] | None = None):
         self.store = store
         self.pipe = pipeline
         self.camera = camera
         self.clock = clock
+        self.revoked = revoked or (lambda: False)  # the server said this kiosk was removed
+        self.clock_verified = clock_verified or (lambda: True)
+        self.on_server_qr: Callable[[str], None] | None = None  # pairing QR shown in settings
+        self._last_now: float | None = None
         self._lock = threading.Lock()
         self._cmd: str | None = None
         self._qr_text: str | None = None
@@ -154,7 +174,7 @@ class Verifier:
         self.locked_until: dict[str, float] = {}
         self.view: dict[str, Any] = {"state": "idle"}
         self._idle_tick = 0
-        self._gallery_cache: tuple[int, np.ndarray, list[str]] | None = None
+        self._gallery_cache: tuple[Roster, np.ndarray, list[str]] | None = None
         self._stop = threading.Event()
 
     # ---------- commands from the UI (thread-safe) ----------
@@ -196,16 +216,32 @@ class Verifier:
                 time.sleep(0.1)
                 continue
             seq, frame = self.camera.latest(seq, timeout=1.0)
-            try:
-                self.step(frame, self.clock())
-            except Exception:
-                log.exception("verifier step failed")
-                self._finish(False, "error", self.clock())
+            self.tick(frame, self.clock())
+
+    def tick(self, frame: np.ndarray | None, now: float) -> None:
+        """step() that never lets an error escape. A failure in the middle of someone's check
+        ends that check (recorded, but it doesn't count toward a lockout); otherwise idle."""
+        try:
+            self.step(frame, now)
+        except Exception:
+            log.exception("verifier step failed")
+            if self.state == "face" and self.session and self.session.member:
+                self._finish(False, "error", now)
+            else:
+                self._to_idle()
 
     def stop(self) -> None:
         self._stop.set()
 
     def step(self, frame: np.ndarray | None, now: float) -> None:
+        if self._last_now is not None and not -1 < now - self._last_now < CLOCK_JUMP:
+            # The wall clock jumped (time sync after boot): timers measured with it are wrong.
+            log.warning("clock jumped by %.0f s; resetting timers", now - self._last_now)
+            self.settings_until = 0.0
+            self.locked_until.clear()
+            self.failures.clear()
+            self._to_idle()
+        self._last_now = now
         cmd = self._take_cmd()
         if cmd == "cancel" and self.state in ("scan_qr", "face"):
             self._to_idle()
@@ -221,10 +257,19 @@ class Verifier:
             self.view = {"state": "setup"}
             return
         if self.settings_open(now):
+            self._idle_tick += 1
+            if frame is not None and self.on_server_qr and self._idle_tick % 3 == 0:
+                text = self.pipe.decode_qr(frame)
+                if text and text.startswith("FXP1:"):
+                    self.on_server_qr(text)  # new address for this kiosk's server, no typing
             self.view = {"state": "settings", "remaining": int(self.settings_until - now)}
             return
+        if self.revoked():
+            self.view = {"state": "not_ready", "message": "This kiosk was removed in the admin panel. "
+                         "Please tell the admin."}
+            return
         if self.roster is None:
-            self.view = {"state": "not_ready", "message": "Waiting for first sync with server"}
+            self.view = {"state": "not_ready", "message": "Connecting to the server…"}
             return
         injected = self._take_qr()
         if injected and self.state in ("idle", "scan_qr", "result"):
@@ -249,7 +294,9 @@ class Verifier:
                 self._idle_tick += 1
                 if frame is not None and self._idle_tick % 3 == 0:
                     text = self.pipe.decode_qr(frame)
-                    if text:
+                    # Only our own codes start a check: a poster with a QR code behind the
+                    # queue must not keep the screen busy.
+                    if text and text.startswith((qr.PREFIX + ".", qr.SETTINGS_PREFIX + ".")):
                         self.session = Session(started=now)
                         self._on_qr(text, now)
                         return
@@ -377,8 +424,11 @@ class Verifier:
 
         s.spoof.append(self.pipe.spoof(frame, face))
         status = s.challenge.feed(self.pipe.mesh(frame, face), now)
+        hint = None
         if s.frames % EMBED_EVERY == 1:
             q, emb = self.pipe.embed(frame, face)
+            if emb is None and q.reasons:
+                hint = QUALITY_HINTS.get(q.reasons[0])
             if emb is not None:
                 score = max(float(np.dot(emb, t)) for t in s.member.templates)
                 s.matches.append(score)
@@ -398,11 +448,11 @@ class Verifier:
             return
 
         if status is Status.BASELINE:
-            msg = "Look straight at the camera and hold still"
+            msg = hint or "Look straight at the camera and hold still"
         elif ch.current:
             msg = PROMPTS[ch.current]
         else:
-            msg = "Hold still..."
+            msg = hint or "Hold still..."
         self.view = {**base, "message": msg, "box": box_n,
                      "action": ch.current.value if ch.current else None,
                      "step": min(ch.step + 1, len(ch.actions)), "steps": len(ch.actions)}
@@ -411,14 +461,14 @@ class Verifier:
         """All templates of the roster as one matrix, for the 1:N cross-check."""
         r = self.roster
         assert r
-        if self._gallery_cache is None or self._gallery_cache[0] != id(r):
+        if self._gallery_cache is None or self._gallery_cache[0] is not r:
             mats, owners = [], []
             for pid, m in r.by_person.items():
                 for t in m.templates:
                     mats.append(t)
                     owners.append(pid)
             mat = np.vstack(mats) if mats else np.zeros((0, 128), np.float32)
-            self._gallery_cache = (id(r), mat, owners)
+            self._gallery_cache = (r, mat, owners)
         return self._gallery_cache[1], self._gallery_cache[2]
 
     def _decide(self, now: float) -> None:
@@ -432,7 +482,7 @@ class Verifier:
         s.scores = {"match": round(best, 4), "liveness": round(liveness, 4),
                     "spoof_low_frac": round(low_frac, 3), "frames": s.frames,
                     "actions": ",".join(a.value for a in s.challenge.actions)}
-        if liveness < th_live or low_frac > 0.2:
+        if not liveness >= th_live or low_frac > 0.2:  # "not >=": a NaN score fails too
             self._finish(False, "liveness_failed", now)
             return
         if sum(m >= th_match for m in s.matches) < MIN_MATCH_FRAMES:
@@ -475,7 +525,8 @@ class Verifier:
         evt = {"id": str(uuid.uuid4()), "occurred_at": self._event_time(now).isoformat(),
                "status": status, "member_id": member.id if member else None,
                "reason": reason[:200], "note": note,
-               "scores": {**(scores or {}), "device_time": datetime.fromtimestamp(now, UTC).isoformat()}}
+               "scores": {**(scores or {}), "device_time": datetime.fromtimestamp(now, UTC).isoformat(),
+                          **({} if self.clock_verified() else {"clock_unverified": True})}}
         if snapshot:
             evt["snapshot_jpeg_b64"] = snapshot
         self.store.enqueue(evt)
@@ -503,13 +554,13 @@ class Verifier:
             self._record("accepted", reason, now, scores)
             if counts:
                 self.store.add_recent(member.id, now)
-            tz = ZoneInfo(self._space("timezone", "UTC"))
-            self._show_result(True, member, label, now,
-                              time_str=datetime.fromtimestamp(now, tz).strftime("%H:%M"))
+            # The time recorded for the event: server-corrected, in the space's time zone.
+            self._show_result(True, member, label, now, time_str=self._event_time(now).astimezone(
+                ZoneInfo(self._space("timezone", "UTC"))).strftime("%H:%M"))
             return
         key = reason.split(":")[0]
         self._record("rejected", reason, now, scores, snapshot=self._snapshot())
-        if s and s.credential_id and key not in ("qr_invalid", "qr_unknown_person"):
+        if s and s.credential_id and key in LOCKOUT_REASONS:
             q = self.failures[s.credential_id]
             q.append(now)
             while q and now - q[0] > LOCKOUT_WINDOW:

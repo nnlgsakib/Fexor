@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "httpx>=0.28",
+    "tzdata; sys_platform == 'win32'",  # Windows has no time zone database
 ]
 
 [project.optional-dependencies]

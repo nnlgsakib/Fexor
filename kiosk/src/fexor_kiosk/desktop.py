@@ -143,6 +143,38 @@ def _find_chromium() -> str | None:
     return None
 
 
+def chromium_args(browser: str, data: Path, windowed: bool) -> list[str]:
+    args = [browser, f"--app={URL}", "--noerrdialogs", "--disable-infobars", "--no-first-run",
+            "--check-for-update-interval=31536000", f"--user-data-dir={data / 'browser'}",
+            # A kiosk has no keyboard for the keyring prompt, and swipes/pinches must not
+            # navigate away or zoom the screen. No "restore pages?" bubble after a power cut.
+            "--password-store=basic", "--disable-pinch", "--overscroll-history-navigation=0",
+            "--hide-crash-restore-bubble", "--disable-session-crashed-bubble"]
+    if not windowed:
+        args.insert(1, "--kiosk")
+    return args
+
+
+def _error_app(message: str):
+    """Shown in the kiosk window when the app can't start (e.g. damaged model files)."""
+    from html import escape
+
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    page = ("<!doctype html><meta charset=utf-8><body style='font:20px system-ui;background:#0d1117;"
+            "color:#e6edf3;display:grid;place-items:center;height:100vh;margin:0'><div style='max-width:640px'>"
+            f"<h1>The kiosk app could not start</h1><p>{escape(message)}</p><p style='color:#8b949e'>"
+            "Reinstalling the Fexor Kiosk app usually fixes this. Details are in kiosk.log.</p></div>")
+
+    @app.get("/{path:path}")
+    async def show(path: str):
+        return HTMLResponse(page)
+
+    return app
+
+
 def _show_window(data: Path, quit_event: threading.Event) -> None:
     windowed = bool(os.environ.get("FEXOR_KIOSK_WINDOWED"))
     try:
@@ -170,16 +202,26 @@ def _show_window(data: Path, quit_event: threading.Event) -> None:
         webbrowser.open(URL)
         quit_event.wait()
         return
-    args = [browser, f"--app={URL}", "--noerrdialogs", "--disable-infobars", "--no-first-run",
-            "--check-for-update-interval=31536000", f"--user-data-dir={data / 'browser'}"]
-    if not windowed:
-        args.insert(1, "--kiosk")
-    proc = subprocess.Popen(args)  # noqa: S603 - fixed browser path and our own local URL
+    started = time.monotonic()
+    proc = subprocess.Popen(chromium_args(browser, data, windowed))  # noqa: S603 - our own local URL
     threading.Thread(target=lambda: (quit_event.wait(), proc.terminate()), daemon=True).start()
     proc.wait()
+    if time.monotonic() - started < 5 and not quit_event.is_set():
+        # Chromium handed the window to a copy that survived a crash and exited at once:
+        # the kiosk is still on screen, so keep running until it is closed from the kiosk.
+        log.info("browser handed off to an existing window; waiting")
+        quit_event.wait()
 
 
 def run() -> None:
+    try:
+        _run()
+    except Exception:
+        log.exception("kiosk app crashed")
+        raise
+
+
+def _run() -> None:
     data = app_data_dir()
     data.mkdir(parents=True, exist_ok=True)
     _setup_logging(data)
@@ -192,9 +234,14 @@ def run() -> None:
     else:
         from fexor_core.models import ensure_all
 
-        ensure_all(Path(os.environ["FEXOR_MODEL_DIR"]))  # no-op when bundled
-        threading.Thread(target=_controller, args=(data, quit_event), daemon=True,
-                         name="controller").start()
+        try:
+            ensure_all(Path(os.environ["FEXOR_MODEL_DIR"]))  # no-op when bundled
+        except Exception as e:  # noqa: BLE001 - shown in the window instead of a silent exit
+            log.exception("face models missing or damaged")
+            _serve(_error_app(f"The face recognition files are missing or damaged ({e})."))
+        else:
+            threading.Thread(target=_controller, args=(data, quit_event), daemon=True,
+                             name="controller").start()
         for _ in range(300):  # wait for the session list before showing the window
             if _port_open() or quit_event.is_set():
                 break

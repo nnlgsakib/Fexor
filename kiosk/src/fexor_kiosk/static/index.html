@@ -16,7 +16,7 @@
   body { display: grid; grid-template-rows: auto 1fr auto; }
   header { display: flex; align-items: center; gap: 16px; padding: 14px 24px;
     border-bottom: 1px solid var(--line); font-size: 18px; }
-  header .space { font-weight: 600; }
+  header .space { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   header .spacer { flex: 1; }
   header .clock { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; }
   .pill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 99px;
@@ -35,12 +35,12 @@
     pointer-events: none; transition: border-color .2s; }
   .stage.face .guide { border-color: var(--accent); border-style: solid; }
   .stage.qr .guide { border-radius: 18px; aspect-ratio: 1; width: 42%; }
-  .nocam { position: absolute; inset: 0; display: none; place-items: center; color: var(--muted);
-    font-size: 20px; text-align: center; padding: 20px; }
+  .nocam { position: absolute; inset: 0; display: none; place-items: center; color: var(--text);
+    background: #000; font-size: 24px; font-weight: 600; text-align: center; padding: 20px; z-index: 1; }
   .stage.nocamera .nocam { display: grid; }
   .msg { font-size: clamp(22px, 3.4vw, 40px); font-weight: 650; text-align: center; min-height: 1.3em;
     max-width: 90vw; }
-  .sub { color: var(--muted); font-size: 18px; text-align: center; min-height: 1.2em; }
+  .sub { color: var(--muted); font-size: 22px; text-align: center; min-height: 1.2em; }
   .steps { display: flex; gap: 10px; }
   .steps span { width: 46px; height: 8px; border-radius: 4px; background: var(--line); }
   .steps span.done { background: var(--accent); }
@@ -49,7 +49,7 @@
     border: 0; background: var(--accent); color: #04211d; cursor: pointer; min-width: 260px; }
   button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line);
     font-size: 18px; padding: 12px 28px; min-width: 0; }
-  button.small { font-size: 16px; padding: 10px 18px; min-width: 0; border-radius: 10px; }
+  button.small { font-size: 17px; padding: 12px 20px; min-width: 0; min-height: 48px; border-radius: 10px; }
   button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
   button:active { transform: scale(.98); }
   button:disabled { opacity: .5; cursor: default; }
@@ -85,7 +85,7 @@
   .status { font-size: 17px; min-height: 1.3em; }
   .status.error { color: var(--bad); } .status.done { color: var(--ok); }
   .status.connecting { color: var(--warn); }
-  details summary { cursor: pointer; color: var(--muted); }
+  details summary { cursor: pointer; color: var(--muted); padding: 10px 0; min-height: 44px; }
   details[open] summary { margin-bottom: 12px; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; font-size: 16px; }
   dt { color: var(--muted); } dd { margin: 0; word-break: break-all; }
@@ -95,16 +95,17 @@
     backdrop-filter: blur(4px); }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 28px;
     padding: 40px 56px; text-align: center; display: grid; gap: 14px; justify-items: center;
-    min-width: min(560px, 90vw); border-top: 10px solid var(--ok); }
+    min-width: min(560px, 90vw); max-width: 96vw; max-height: calc(100vh - 24px); overflow-y: auto;
+    border-top: 10px solid var(--ok); }
   .card.bad { border-top-color: var(--bad); }
   .card .icon { width: 84px; height: 84px; }
   .card .name { font-size: 34px; font-weight: 700; }
   .card .label { font-size: 26px; }
   .card .time { font-size: 48px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .card .why { font-size: 22px; color: var(--muted); max-width: 520px; }
+  .card .why { font-size: 24px; color: var(--text); max-width: 520px; }
   footer { padding: 10px 24px; color: var(--muted); font-size: 14px; display: flex; gap: 18px;
     border-top: 1px solid var(--line); }
-  .menubtn { font-size: 16px; padding: 8px 16px; min-width: 0; border-radius: 10px; }
+  .menubtn { font-size: 17px; padding: 12px 18px; min-width: 0; min-height: 48px; border-radius: 10px; }
   .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .sheet { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.7);
     backdrop-filter: blur(4px); z-index: 10; }
@@ -113,11 +114,33 @@
   .sheet .actions { display: grid; gap: 12px; width: min(420px, 80vw); }
   .sheet .actions button { width: 100%; }
   .sheet img { width: min(420px, 80vw); aspect-ratio: 4 / 3; object-fit: cover; border-radius: 14px;
-    transform: scaleX(-1); background: #000; }
+    transform: scaleX(-1); background: #000; justify-self: center; }
   .sheet p { margin: 0; color: var(--muted); font-size: 18px; max-width: 460px; line-height: 1.4; }
   @media (max-width: 900px) {
     body.manage main { flex-direction: column; align-items: center; }
-    body.manage .stage { position: static; width: 92vw; }
+    body.manage .stage { position: relative; width: min(92vw, 50vh * 4 / 3); }
+  }
+  /* Small screens such as the 7-inch Raspberry Pi display (800 x 480): everything must fit. */
+  @media (max-height: 520px) {
+    header { padding: 6px 14px; font-size: 16px; gap: 10px; }
+    header .clock { font-size: 18px; }
+    footer { display: none; }
+    main { gap: 8px; padding: 8px; }
+    .stage { width: min(78vw, 44vh * 4 / 3); border-radius: 14px; }
+    .msg { font-size: 24px; }
+    .sub { font-size: 18px; }
+    button { font-size: 20px; padding: 12px 30px; min-width: 200px; }
+    .card { padding: 18px 24px; gap: 8px; border-radius: 18px; }
+    .card .icon { width: 52px; height: 52px; }
+    .card .name { font-size: 26px; }
+    .card .label { font-size: 22px; }
+    .card .time { font-size: 34px; }
+    .card .why { font-size: 20px; }
+    .sheet img { width: auto; height: 34vh; }
+    .sheet .card { padding: 16px 24px; gap: 10px; }
+    .sheet p { font-size: 16px; }
+    .sheet h2 { font-size: 22px; }
+    .panel h1 { font-size: 24px; }
   }
 </style>
 </head>
@@ -137,7 +160,7 @@
     <img id="video" alt="">
     <canvas id="overlay"></canvas>
     <div class="guide verify"></div>
-    <div class="nocam">No picture from the camera.<br>Choose another camera in the settings.</div>
+    <div class="nocam" id="nocam">The camera is not working.<br>Please tell the admin.</div>
   </div>
 
   <div class="msg verify" id="msg">Starting…</div>
@@ -210,7 +233,9 @@
         <dt>Status</dt><dd id="sOnline"></dd>
       </dl>
       <div class="warnline hidden" id="sHttp">This connection is not encrypted. Use it only on a trusted office network.</div>
-      <p>Server moved to a new address (for example its IP changed)? Enter it here; the kiosk stays paired.</p>
+      <div class="warnline hidden" id="sStuck"></div>
+      <p>Server moved to a new address (for example its IP changed)? Show this camera the pairing QR from the
+        admin panel (<b>Kiosks</b>, <b>Set up again</b>), or type the new address here. The kiosk stays paired.</p>
       <div class="row">
         <input id="serverUrl" placeholder="http://192.168.1.20">
         <button class="small" id="saveServer">Save</button>
@@ -277,9 +302,14 @@ const BAD_ICON = '<circle cx="12" cy="12" r="10" stroke="#d1453b"/><path d="M8.5
 const CAMERA_SLOTS = 6;
 let ws, view = {}, lastUrl, dev = false, manageMode = "", canQuit = false;
 let menuAction = null;  // "settings" | "exit" while waiting for the admin's Settings QR
+let camUrls = [];  // preview pictures in the camera chooser, released when it reloads
 
 function tick() {
-  $("clock").textContent = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  let text;
+  try {  // the space's time, like the times on the result screen
+    text = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", timeZone: view.tz || undefined});
+  } catch { text = new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+  $("clock").textContent = text;
 }
 setInterval(tick, 1000); tick();
 
@@ -356,6 +386,8 @@ function drawBox(box) {
 // ---------- camera chooser (setup and settings) ----------
 async function loadCameras(gridId, statusId) {
   const grid = $(gridId);
+  camUrls.forEach((u) => URL.revokeObjectURL(u));
+  camUrls = [];
   grid.innerHTML = "";
   const cells = [];
   for (let i = 0; i < CAMERA_SLOTS; i++) {
@@ -376,6 +408,7 @@ async function loadCameras(gridId, statusId) {
         const r = await fetch(`/api/cameras/${i}/snapshot`);
         if (!r.ok) throw 0;
         const url = URL.createObjectURL(await r.blob());
+        camUrls.push(url);
         cells[i].querySelector(".ph").outerHTML = `<img src="${url}" alt="Camera ${i + 1}">`;
       } catch {
         // Keep the camera in use even if its picture is slow; drop cameras that give none.
@@ -468,8 +501,16 @@ function renderManage(v) {
     $("sDevice").textContent = v.device || "–";
     $("sServer").textContent = v.server || "–";
     if (!$("serverUrl").value) $("serverUrl").value = v.server || "";
-    $("sOnline").textContent = v.online ? "Online" : "Offline" + (v.outbox ? `, ${v.outbox} waiting to upload` : "");
+    $("sOnline").textContent = v.revoked ? "Removed in the admin panel: pair it again below"
+      : v.online ? "Online" : "Offline" + (v.outbox ? `, ${v.outbox} waiting to upload` : "");
     $("sHttp").classList.toggle("hidden", !(v.server || "").startsWith("http://"));
+    $("sStuck").classList.toggle("hidden", !v.stuck);
+    $("sStuck").textContent = v.stuck ? `${v.stuck} check-ins were refused by the server and are kept on this kiosk. Updating the kiosk app usually fixes this.` : "";
+    const sc = v.server_change || {};
+    if (sc.status && sc.status !== "idle") {
+      $("serverStatus").className = "status " + sc.status;
+      $("serverStatus").textContent = sc.message;
+    }
   }
   return !!mode;
 }
@@ -488,7 +529,7 @@ function render(v) {
   $("space").textContent = v.state === "setup" ? "New kiosk" : (v.space || "Attendance");
   $("netpill").classList.toggle("hidden", v.state === "setup");
   $("netdot").className = "dot " + (v.online ? "on" : "off");
-  $("net").textContent = v.online ? "Online" : "Offline – saving locally";
+  $("net").textContent = v.revoked ? "Removed by admin" : v.online ? "Online" : "Offline – saving locally";
   $("queue").classList.toggle("hidden", !v.outbox);
   $("queue").textContent = `${v.outbox} waiting to upload`;
   const stage = $("stage");
@@ -496,7 +537,8 @@ function render(v) {
     + (v.camera_ok === false ? " nocamera" : "");
   if (renderManage(v)) { $("result").classList.add("hidden"); drawBox(null); return; }
 
-  $("msg").textContent = v.message || "";
+  $("msg").textContent = v.camera_ok === false && v.state === "idle"
+    ? "Check-in is paused: the camera is not working" : (v.message || "");
   let sub = "";
   if (v.state === "face" && v.name) sub = `Verifying ${v.name}` + (v.remaining != null ? `, ${v.remaining}s left` : "");
   if (v.state === "scan_qr" && v.remaining != null) sub = `${v.remaining}s`;
@@ -508,7 +550,7 @@ function render(v) {
       `<span class="${i + 1 < v.step ? "done" : i + 1 === v.step && v.action ? "now" : ""}"></span>`).join("");
   } else steps.classList.add("hidden");
   const busy = v.state === "scan_qr" || v.state === "face";
-  $("start").classList.toggle("hidden", v.state !== "idle");
+  $("start").classList.toggle("hidden", v.state !== "idle" || v.camera_ok === false);
   $("cancel").classList.toggle("hidden", !busy);
   $("qrup").classList.toggle("hidden", !(dev && (v.state === "idle" || v.state === "scan_qr")));
   drawBox(v.state === "face" ? v.box : null);

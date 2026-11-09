@@ -548,7 +548,7 @@ async def test_change_server_requires_same_server(tmp_path, monkeypatch):
     monkeypatch.setattr(sync.httpx, "AsyncClient", FakeClient)
     assert await sync.change_server(store, "192.168.1.103") == "http://192.168.1.103"
     assert store.get("server_url") == "http://192.168.1.103"
-    for bad, why in [("192.168.1.104", "does not know this kiosk"), ("192.168.1.105", "cannot reach"),
+    for bad, why in [("192.168.1.104", "does not know this kiosk"), ("192.168.1.105", "Can.t reach"),
                      ("http://attendance.example.com", "not using https")]:
         with pytest.raises(ValueError, match=why):
             await sync.change_server(store, bad)

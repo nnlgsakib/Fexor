@@ -10,6 +10,7 @@ import os
 import platform
 import time
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 from urllib.parse import urlparse
 
@@ -18,7 +19,10 @@ import httpx
 from .store import Store
 
 log = logging.getLogger("fexor.sync")
-VERSION = "0.1.0"
+try:
+    VERSION = version("fexor-kiosk")  # shown on the admin's Kiosks page, to spot old kiosks
+except PackageNotFoundError:
+    VERSION = "unknown"
 
 
 def _verify() -> str | bool:
@@ -69,12 +73,21 @@ async def enroll(store: Store, server_url: str, code: str) -> dict[str, Any]:
     if server_url.startswith("http://") and not http_allowed(server_url):
         raise ValueError("this server is on the internet but not using https://, which is not "
                          "safe. Ask your admin to turn on HTTPS.")
-    async with httpx.AsyncClient(base_url=server_url, timeout=20, verify=_verify()) as c:
-        r = await c.post("/api/device/enroll", json={"code": code, "info": device_info(store)})
+    try:
+        async with httpx.AsyncClient(base_url=server_url, timeout=20, verify=_verify()) as c:
+            r = await c.post("/api/device/enroll", json={"code": code, "info": device_info(store)})
+    except httpx.HTTPError as e:
+        raise ValueError(_unreachable(server_url, e)) from e
+    if not r.headers.get("content-type", "").startswith("application/json"):
+        raise ValueError(f"{server_url} answered, but it is not a Fexor server (or a sign-in page "
+                         "of the network is in the way). Check the address.")
+    if r.status_code == 401:
+        raise ValueError("This pairing code is wrong or has expired. Show a new one from the admin "
+                         "panel (Kiosks, Set up again).")
+    if r.status_code == 429:
+        raise ValueError("Too many tries. Wait five minutes, then try again.")
     if r.status_code != 200:
-        detail = r.json().get("detail") if r.headers.get("content-type", "").startswith(
-            "application/json") else r.text
-        raise ValueError(f"setup failed: {detail}")
+        raise ValueError(f"Setup failed: {r.json().get('detail', r.status_code)}")
     data = r.json()
     store.reset()
     store.set("server_url", server_url)
@@ -100,7 +113,7 @@ async def change_server(store: Store, server_url: str) -> str:
             r = await c.post("/api/device/heartbeat", json={"info": device_info(store)},
                              headers={"Authorization": f"Bearer {token}"})
     except httpx.HTTPError as e:
-        raise ValueError(f"cannot reach {url} ({type(e).__name__})") from e
+        raise ValueError(_unreachable(url, e)) from e
     if r.status_code == 401:
         raise ValueError("that server does not know this kiosk. To use a different server, "
                          "disconnect the kiosk and pair it again.")
@@ -108,6 +121,17 @@ async def change_server(store: Store, server_url: str) -> str:
         raise ValueError(f"{url} answered with an error ({r.status_code}); is it the Fexor server?")
     store.set("server_url", url)
     return url
+
+
+def _unreachable(url: str, e: Exception) -> str:
+    if isinstance(e, httpx.TimeoutException):
+        why = "it did not answer in time"
+    elif "certificate" in str(e).lower() or "ssl" in type(e).__name__.lower():
+        why = "its security certificate is not trusted"
+    else:
+        why = "nothing answered at that address"
+    return (f"Can't reach {url}: {why}. Check the address, and that this computer is on the "
+            "same network as the server.")
 
 
 def device_info(store: Store, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -127,28 +151,36 @@ class Syncer:
         self.interval = interval
         self.extra_info = extra_info or (lambda: {})
         self.status: dict[str, Any] = {"online": False, "last_ok": None, "error": None}
+        # The kiosk clock is trusted once a heartbeat measured it against the server's, since
+        # this start (a Raspberry Pi has no clock battery: after a power cut its time is wrong).
+        self.clock_verified = False
         self._wake = asyncio.Event()
 
     def poke(self) -> None:
         """Sync soon (e.g. after an event was recorded)."""
         self._wake.set()
 
+    async def sync_now(self) -> float:
+        """One sync with status bookkeeping. Returns how long to wait before the next one."""
+        try:
+            await self.once()
+            self.status = {"online": True, "last_ok": time.time(), "error": None}
+            return self.interval
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            self.status = {**self.status, "online": False,
+                           "error": "revoked" if code == 401 else f"http {code}"}
+            return 300.0 if code == 401 else 60.0
+        except Exception as e:  # noqa: BLE001 - offline is normal, keep retrying
+            self.status = {**self.status, "online": False, "error": type(e).__name__}
+            return 30.0
+
     async def run(self) -> None:
         backoff = self.interval
         while True:
             if self.store.has("token"):
-                try:
-                    await self.once()
-                    self.status = {"online": True, "last_ok": time.time(), "error": None}
-                    backoff = self.interval
-                except httpx.HTTPStatusError as e:
-                    code = e.response.status_code
-                    self.status = {**self.status, "online": False,
-                                   "error": "revoked" if code == 401 else f"http {code}"}
-                    backoff = min(backoff * 2, 300)
-                except Exception as e:  # noqa: BLE001 - offline is normal, keep retrying
-                    self.status = {**self.status, "online": False, "error": type(e).__name__}
-                    backoff = min(backoff * 2, 120)
+                wait = await self.sync_now()
+                backoff = self.interval if wait == self.interval else min(max(backoff * 2, wait), 300)
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=backoff)
             except TimeoutError:
@@ -168,16 +200,38 @@ class Syncer:
             r.raise_for_status()
             server = datetime.fromisoformat(r.json()["server_time"]).timestamp()
             self.store.set("clock_offset", f"{server - (t0 + t1) / 2:.3f}")
+            self.clock_verified = True
 
-            while batch := self.store.pending(100):
-                r = await c.post("/api/device/events", json={"events": batch})
-                r.raise_for_status()
-                self.store.ack(r.json()["stored"])
-
+            # Roster first: revoked cards and new people must arrive even if uploads have trouble.
             etag = self.store.get("etag") if self.store.roster else None
             r = await c.get("/api/device/sync", headers={"If-None-Match": etag} if etag else {})
-            if r.status_code == 304:
-                return
+            if r.status_code != 304:
+                r.raise_for_status()
+                # Decrypting and parsing a big roster takes seconds on a Pi: not on the event loop.
+                await asyncio.to_thread(self.store.save_roster, r.json(), r.headers.get("etag"))
+                log.info("roster updated: %d members", len(self.store.roster.by_person))
+
+            await self._upload(c)
+            await asyncio.to_thread(self.store.drop_old_snapshots)
+
+    async def _upload(self, c: httpx.AsyncClient) -> None:
+        while batch := self.store.pending(100):
+            r = await c.post("/api/device/events", json={"events": batch})
+            if 400 <= r.status_code < 500 and r.status_code not in (401, 429):
+                # Something in this batch is refused (e.g. after a version change). Send one by
+                # one so only the bad event is held back, never the whole queue.
+                for e in batch:
+                    one = await c.post("/api/device/events", json={"events": [e]})
+                    if one.status_code < 400:
+                        self.store.ack(one.json()["stored"])
+                    elif 400 <= one.status_code < 500 and one.status_code not in (401, 429):
+                        log.warning("server refused event %s: %s", e["id"], one.text[:200])
+                        self.store.refused([e["id"]])
+                    else:
+                        one.raise_for_status()
+                continue
             r.raise_for_status()
-            self.store.save_roster(r.json(), r.headers.get("etag"))
-            log.info("roster updated: %d members", len(self.store.roster.by_person))
+            stored = r.json().get("stored") or []
+            self.store.ack(stored)
+            if not stored:
+                return  # nothing taken: stop instead of resending the same batch forever

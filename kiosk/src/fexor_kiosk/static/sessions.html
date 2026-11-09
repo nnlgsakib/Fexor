@@ -26,8 +26,12 @@
   .item .name { font-size: 20px; font-weight: 650; }
   .item .meta { color: var(--muted); font-size: 15px; overflow-wrap: anywhere; }
   .item .new { color: var(--warn); }
+  .item .side { display: grid; gap: 10px; justify-items: end; }
+  .item .del { font-size: 15px; padding: 10px 14px; min-height: 44px; }
+  .auto { background: var(--panel); border: 1px solid var(--accent); border-radius: 16px; padding: 16px 20px;
+    display: flex; gap: 16px; align-items: center; justify-content: space-between; font-size: 19px; }
   button { font: inherit; font-weight: 650; border-radius: 12px; border: 0; cursor: pointer;
-    background: var(--accent); color: #04211d; font-size: 17px; padding: 12px 22px; }
+    background: var(--accent); color: #04211d; font-size: 18px; padding: 12px 22px; min-height: 48px; }
   button.big { font-size: 22px; padding: 16px 30px; border-radius: 16px; }
   button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
   button.danger { background: transparent; color: var(--bad); border: 1px solid var(--line); }
@@ -48,6 +52,7 @@
   <h1>Choose a session</h1>
   <p>A session is this kiosk's connection to one server and space. Open a saved one, or start a
     new one to connect to another server or space.</p>
+  <div class="auto hidden" id="auto"><span id="autoText"></span><button class="ghost" id="autoStop">Stay here</button></div>
   <div class="list" id="list"></div>
   <div class="err" id="err"></div>
   <div class="actions">
@@ -85,7 +90,7 @@ function el(tag, cls, text) {
 }
 
 async function load() {
-  const {sessions, now} = await call("GET", "/api/sessions");
+  const {sessions, now, auto_open, auto_open_seconds} = await call("GET", "/api/sessions");
   const list = $("list");
   list.innerHTML = "";
   if (!sessions.length) list.append(el("div", "empty", "No saved sessions yet. Start a new one to connect this kiosk."));
@@ -100,14 +105,41 @@ async function load() {
       info.append(el("div", "meta new", "Setup was started but not finished."));
     }
     info.append(el("div", "meta", `Last used ${ago(now - s.last_used)}`));
-    const open = el("button", "", s.paired ? "Open" : "Continue setup");
+    const side = el("div", "side");
+    const open = el("button", "big", s.paired ? "Open" : "Continue setup");
     open.onclick = () => go("POST", `/api/sessions/${s.id}/open`, s.space || "setup");
-    const del = el("button", "danger", "Delete");
+    const del = el("button", "danger del", "Delete…");  // small and apart from Open: no mis-taps
     del.onclick = () => remove(s);
-    item.append(info, open, del);
+    side.append(open, del);
+    item.append(info, side);
     list.append(item);
   }
+  startAutoOpen(sessions.find((s) => s.id === auto_open), auto_open_seconds);
 }
+
+// After a reboot or power cut nobody is there to tap Open: start the last session by itself.
+// Any touch, click or key press stops the countdown.
+let autoTimer = null;
+function stopAutoOpen() {
+  clearInterval(autoTimer); autoTimer = null;
+  $("auto").classList.add("hidden");
+}
+function startAutoOpen(session, seconds) {
+  stopAutoOpen();
+  if (!session) return;
+  let left = seconds;
+  const show = () => { $("autoText").textContent = `Opening ${session.space || "the last session"} in ${left} s…`; };
+  show();
+  $("auto").classList.remove("hidden");
+  autoTimer = setInterval(() => {
+    left -= 1;
+    if (left > 0) { show(); return; }
+    stopAutoOpen();
+    go("POST", `/api/sessions/${session.id}/open`, session.space || "setup");
+  }, 1000);
+}
+["pointerdown", "keydown"].forEach((ev) => document.addEventListener(ev, stopAutoOpen, {capture: true}));
+$("autoStop").onclick = stopAutoOpen;
 
 async function go(method, path, what) {
   $("err").textContent = "";
@@ -130,11 +162,12 @@ async function go(method, path, what) {
 async function remove(s) {
   const name = s.space || "this unfinished setup";
   if (!confirm(`Delete the session for ${name}? This kiosk forgets the connection and any check-ins it hasn't uploaded yet. The server keeps everything it already has.`)) return;
-  try { await call("DELETE", `/api/sessions/${s.id}`); await load(); } catch (e) { $("err").textContent = e.message; }
+  try { await call("DELETE", `/api/sessions/${s.id}`); await load(); stopAutoOpen(); } catch (e) { $("err").textContent = e.message; }
 }
 
 $("newBtn").onclick = () => go("POST", "/api/sessions", "setup");
 $("exitBtn").onclick = async () => {
+  if (!confirm("Close the kiosk app? People can't check in until it is started again.")) return;
   try { await call("POST", "/api/quit"); } catch (e) { $("err").textContent = e.message; }
 };
 load().catch((e) => { $("err").textContent = e.message; });

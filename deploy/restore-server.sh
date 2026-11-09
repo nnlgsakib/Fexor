@@ -6,6 +6,7 @@
 # Scripted use: FEXOR_RESTORE_CONFIRM=RESTORE
 set -euo pipefail
 cd "$(dirname "$0")"
+export MSYS_NO_PATHCONV=1  # Git Bash on Windows: keep container paths like /tmp as they are
 [[ -f .env ]] || { echo "Start the server once first (./deploy/start-server.sh), then restore into it."; exit 1; }
 src=${1:-$(ls -1d backups/*/ 2>/dev/null | sort -r | head -1)}
 src=${src%/}

@@ -205,7 +205,7 @@ export function Overview() {
                           {dateIn(tz, new Date(e.occurred_at)) === today ? fmtTime(e.occurred_at, tz) : fmtDateTime(e.occurred_at, tz)}
                         </Table.Td>
                         <Table.Td>{e.member_name ?? <Text c="dimmed" span>Unknown</Text>}</Table.Td>
-                        <Table.Td><Text size="sm" c="dimmed">{reasonText(e.reason)}</Text></Table.Td>
+                        <Table.Td visibleFrom="sm"><Text size="sm" c="dimmed">{reasonText(e.reason)}</Text></Table.Td>
                         <Table.Td ta="right"><EventBadge status={e.status} /></Table.Td>
                       </Table.Tr>
                     ))}

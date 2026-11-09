@@ -38,8 +38,9 @@ answer=${FEXOR_RESET_CONFIRM:-}
 if [[ -n "$containers" && -f .env ]]; then
   echo "Saving a final backup first..."
   if ! ./backup-server.sh; then
-    go=${FEXOR_RESET_CONFIRM:+yes}
-    [[ -z "$go" ]] && read -rp "The backup failed. Delete anyway? Type yes to continue: " go
+    # Scripted runs stop here unless FEXOR_RESET_FORCE=1: never delete without a backup by accident.
+    go=${FEXOR_RESET_FORCE:+yes}
+    [[ -z "$go" && -z "${FEXOR_RESET_CONFIRM:-}" ]] && read -rp "The backup failed. Delete anyway? Type yes to continue: " go
     [[ "$go" == "yes" ]] || { echo "Cancelled. Nothing was deleted."; exit 0; }
   fi
 fi

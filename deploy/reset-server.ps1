@@ -70,7 +70,8 @@ if ($containers.Count -and (Test-Path $envFile)) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $deploy "backup-server.ps1")
     $env:FEXOR_UNATTENDED = if ($unattended) { "1" } else { "" }
     if ($LASTEXITCODE -ne 0) {
-        $go = if ($unattended) { "yes" } else { Read-Host "The backup failed. Delete anyway? Type yes to continue" }
+        # Scripted runs stop here unless FEXOR_RESET_FORCE=1: never delete without a backup by accident.
+        $go = if ($env:FEXOR_RESET_FORCE) { "yes" } elseif ($unattended) { "no" } else { Read-Host "The backup failed. Delete anyway? Type yes to continue" }
         if ($go -ne "yes") { Write-Host "Cancelled. Nothing was deleted." -ForegroundColor Green; Pause-Window; exit 0 }
     }
 }

@@ -5,6 +5,7 @@
 #   Usage: ./deploy/backup-server.sh
 set -euo pipefail
 cd "$(dirname "$0")"
+export MSYS_NO_PATHCONV=1  # Git Bash on Windows: keep container paths like /tmp as they are
 [[ -f .env ]] || { echo "No Fexor server here (deploy/.env is missing)."; exit 1; }
 compose() { docker compose --env-file .env "$@"; }
 
@@ -13,6 +14,7 @@ for _ in $(seq 60); do compose exec -T db pg_isready -U fexor >/dev/null 2>&1 &&
 
 dir="backups/$(date +%Y-%m-%d_%H%M%S)"
 mkdir -p "$dir"
+trap '[[ -s "$dir/fexor.dump" ]] || rm -rf "$dir"' EXIT  # no half-made backups
 compose exec -T db pg_dump -U fexor -Fc -f /tmp/fexor.dump fexor
 compose cp db:/tmp/fexor.dump "$dir/fexor.dump" >/dev/null
 compose exec -T db rm -f /tmp/fexor.dump

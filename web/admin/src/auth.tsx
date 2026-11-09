@@ -81,8 +81,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     await api("/auth/logout", { method: "POST" }).catch(() => undefined);
-    qc.clear();
-    qc.setQueryData(["me"], null);
+    // A fresh page load: nothing of this admin's data stays in memory, and the sign-in page
+    // shows reliably (clearing the query cache under a mounted page left it on screen).
+    window.location.assign("/");
   };
   return <AuthContext.Provider value={{ me: q.data, refresh: () => q.refetch(), logout }}>{children}</AuthContext.Provider>;
 }

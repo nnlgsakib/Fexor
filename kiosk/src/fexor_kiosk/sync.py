@@ -11,6 +11,7 @@ import platform
 import time
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,10 +20,19 @@ import httpx
 from .store import Store
 
 log = logging.getLogger("fexor.sync")
-try:
-    VERSION = version("fexor-kiosk")  # shown on the admin's Kiosks page, to spot old kiosks
-except PackageNotFoundError:
-    VERSION = "unknown"
+def _version() -> str:
+    """Shown on the admin's Kiosks page, to spot kiosks that need an update. Installed apps
+    carry the release number (stamped by packaging/build.py); a source install its package's."""
+    stamp = Path(__file__).parent / "static" / "version.txt"
+    if stamp.is_file():
+        return stamp.read_text().strip()
+    try:
+        return version("fexor-kiosk")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+VERSION = _version()
 
 
 def _verify() -> str | bool:

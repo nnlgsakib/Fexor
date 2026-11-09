@@ -16,3 +16,4 @@ data/
 packaging/build/
 packaging/dist/
 packaging/dist-debug/
+kiosk/src/fexor_kiosk/static/version.txt

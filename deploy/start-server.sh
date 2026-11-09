@@ -22,7 +22,10 @@ if [[ ! -f .env ]]; then
   echo "  2) Internet, own domain - domain points to this computer, ports 80 and 443 open (HTTPS)"
   echo "  3) Internet, Cloudflare - HTTPS through a Cloudflare Tunnel; no router changes needed"
   read -rp "Choose 1, 2 or 3 (default 1): " mode
-  cfg="POSTGRES_PASSWORD=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')
+  # Its own Docker project name: otherwise every install folder called "deploy" is the same
+  # project and a new install would reuse (and fail to open) an older install's database.
+  cfg="COMPOSE_PROJECT_NAME=fexor-$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
+POSTGRES_PASSWORD=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')
 FEXOR_DATA_KEY=$(head -c 32 /dev/urandom | base64)"
   if [[ "$mode" == "3" ]]; then
     echo "In the Cloudflare dashboard: Zero Trust > Networks > Tunnels > Create a tunnel (Cloudflared)."

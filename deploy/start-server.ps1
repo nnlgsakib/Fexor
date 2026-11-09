@@ -81,7 +81,11 @@ function Ensure-Settings {
     Write-Host "  2) Internet, own domain - domain points to this computer, ports 80 and 443 open (HTTPS)"
     Write-Host "  3) Internet, Cloudflare - HTTPS through a Cloudflare Tunnel; no router changes needed"
     $mode = Read-Host "Choose 1, 2 or 3 (default 1)"
-    $lines = @("POSTGRES_PASSWORD=$((RandomBase64 24) -replace '[^A-Za-z0-9]', '')", "FEXOR_DATA_KEY=$(RandomBase64 32)")
+    # Its own Docker project name: otherwise every install folder called "deploy" is the same project
+    # and a new install would reuse (and fail to open) an older install's database.
+    $suffix = -join ((1..6) | ForEach-Object { "{0:x}" -f (Get-Random -Maximum 16) })
+    $lines = @("COMPOSE_PROJECT_NAME=fexor-$suffix",
+               "POSTGRES_PASSWORD=$((RandomBase64 24) -replace '[^A-Za-z0-9]', '')", "FEXOR_DATA_KEY=$(RandomBase64 32)")
     if ($mode -eq "3") {
         Write-Host "In the Cloudflare dashboard: Zero Trust > Networks > Tunnels > Create a tunnel (Cloudflared)."
         Write-Host "Add a public hostname (e.g. attendance.example.com) with service http://caddy:80,"
@@ -149,9 +153,18 @@ function Register-Backup {
     # A daily backup at 02:00 (Docker Desktop must be running, which it is while you are signed in).
     $id = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($deploy))).Replace("-", "").Substring(0, 8)
     $script = Join-Path $deploy "backup-server.ps1"
-    $action = "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"`$env:FEXOR_UNATTENDED='1'; & '$script'`""
-    & schtasks /Create /F /SC DAILY /ST 02:00 /TN "Fexor daily backup $id" /TR $action 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Host "Daily backup at 02:00 is set up (deployackups)." }
+    try {
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" -Unattended"
+        $trigger = New-ScheduledTaskTrigger -Daily -At 2am
+        # Runs later if the computer was off at 02:00.
+        $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
+        Register-ScheduledTask -TaskName "Fexor daily backup $id" -Action $action -Trigger $trigger `
+            -Settings $settings -Force -ErrorAction Stop | Out-Null
+        Write-Host "Daily backup at 02:00 is set up (deploy\backups)."
+    } catch {
+        Write-Host "Could not set up the daily backup ($($_.Exception.Message)). Use 'Backup Server' now and then." -ForegroundColor Yellow
+    }
 }
 
 function Start-Stack {

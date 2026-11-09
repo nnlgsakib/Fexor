@@ -44,9 +44,15 @@ def fetch_models() -> None:
 
 def pyinstaller() -> Path:
     os.environ["FEXOR_VERSION"] = VERSION
-    run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-         "--distpath", str(DIST), "--workpath", str(BUILD / "pyinstaller"),
-         str(HERE / "fexor_kiosk.spec")])
+    # The release number travels inside the app (shown on the admin's Kiosks page).
+    stamp = HERE.parent / "kiosk" / "src" / "fexor_kiosk" / "static" / "version.txt"
+    stamp.write_text(VERSION)
+    try:
+        run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
+             "--distpath", str(DIST), "--workpath", str(BUILD / "pyinstaller"),
+             str(HERE / "fexor_kiosk.spec")])
+    finally:
+        stamp.unlink(missing_ok=True)
     return DIST / APP
 
 

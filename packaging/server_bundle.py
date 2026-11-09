@@ -22,6 +22,7 @@ FILES = [
     "deploy/docker-compose.yml",
     "deploy/Caddyfile",
     "deploy/Caddyfile.http",
+    "deploy/Caddyfile.tunnel",
     "deploy/start-server.ps1",
     "deploy/start-server.sh",
     "deploy/stop-server.ps1",

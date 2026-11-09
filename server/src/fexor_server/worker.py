@@ -10,9 +10,13 @@ import hashlib
 import hmac
 import json
 import logging
+import os
+import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -28,6 +32,11 @@ from .services import recompute_space
 
 log = logging.getLogger("fexor.worker")
 CLOSE_DAYS_EVERY = 600  # seconds
+# Touched after every loop; the container health check reads its age.
+HEARTBEAT = Path(os.environ.get("FEXOR_WORKER_HEARTBEAT",
+                                Path(tempfile.gettempdir(), "fexor-worker-heartbeat")))
+# After a restart, fill in absences for days the worker may have missed while it was down.
+CATCH_UP_DAYS = 31
 
 
 async def handle_recompute(db: AsyncSession, payload: dict) -> None:
@@ -42,7 +51,8 @@ async def handle_webhook(db: AsyncSession, payload: dict) -> None:
     if not hook or not hook.active:
         return
     secret = crypto.unseal(get_settings().key, hook.secret, b"webhook")
-    body = json.dumps({"id": str(uuid.uuid4()), "type": payload["type"],
+    # The id is fixed when the job is queued, so a receiver can drop retried deliveries.
+    body = json.dumps({"id": payload.get("event_id") or str(uuid.uuid4()), "type": payload["type"],
                        "created_at": now().isoformat(), "data": payload["data"]},
                       separators=(",", ":"))
     ts = str(int(time.time()))
@@ -84,31 +94,56 @@ async def run_one() -> bool:
         return True
 
 
-async def close_days() -> None:
-    """Mark absences once shift windows close; also refreshes today's partial rows."""
+async def close_days(lookback_days: int = 2) -> None:
+    """Mark absences once shift windows close; also refreshes today's partial rows.
+    One space failing (bad data) must not stop the others."""
     async with sessionmaker()() as db:
         spaces = (await db.execute(select(Space).where(Space.deleted_at.is_(None)))).scalars().all()
         for s in spaces:
-            today = datetime.now(ZoneInfo(s.timezone)).date()
-            await recompute_space(db, s, today - timedelta(days=2), today)
-            await db.commit()
+            try:
+                today = datetime.now(ZoneInfo(s.timezone)).date()
+                await recompute_space(db, s, today - timedelta(days=lookback_days), today)
+                await db.commit()
+            except Exception:
+                log.exception("closing days failed for space %s", s.id)
+                await db.rollback()
         await db.execute(delete(AdminSession).where(AdminSession.expires_at < now()))
         await db.execute(delete(Job).where(Job.done_at < now() - timedelta(days=30),
                                            Job.last_error.is_(None)))
         await db.commit()
 
 
+@dataclass
+class WorkerState:
+    last_close: float = 0.0
+    caught_up: bool = False
+
+
+async def tick(state: WorkerState) -> None:
+    """One loop: close days when due, then drain the job queue. Each part fails alone."""
+    if not state.last_close or time.monotonic() - state.last_close > CLOSE_DAYS_EVERY:
+        # Counted before running: a failing close waits for the next round, not 2 seconds.
+        state.last_close = time.monotonic()
+        try:
+            await close_days(2 if state.caught_up else CATCH_UP_DAYS)
+            state.caught_up = True
+        except Exception:
+            log.exception("closing days failed")
+    try:
+        while await run_one():
+            pass
+    except Exception:
+        log.exception("job queue error")
+    try:
+        HEARTBEAT.touch()  # noqa: ASYNC240 - one tiny local write per loop
+    except OSError:
+        log.warning("cannot write heartbeat file %s", HEARTBEAT)
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     log.info("worker started")
-    last_close = 0.0
+    state = WorkerState()
     while True:
-        try:
-            if time.monotonic() - last_close > CLOSE_DAYS_EVERY:
-                await close_days()
-                last_close = time.monotonic()
-            while await run_one():
-                pass
-        except Exception:
-            log.exception("worker loop error")
+        await tick(state)
         await asyncio.sleep(2)

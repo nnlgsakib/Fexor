@@ -1,13 +1,15 @@
 """Spaces, members (people in a space) and Excel/CSV import."""
 
+import asyncio
 import csv
 import io
+import math
 import uuid
 from datetime import date, time
 from typing import Any, Literal
 from zoneinfo import available_timezones
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, Field, field_validator
@@ -16,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_db
 from ..models import (
+    ROLE_RANK,
     FaceTemplate,
     Membership,
     Mode,
@@ -26,6 +29,7 @@ from ..models import (
     Space,
 )
 from ..security import Principal, audit, current, now, require_space, require_superadmin
+from ..services import queue_recompute, space_today
 
 router = APIRouter(prefix="/api", tags=["spaces"])
 
@@ -33,20 +37,20 @@ router = APIRouter(prefix="/api", tags=["spaces"])
 # ---------- spaces ----------
 class FieldDef(BaseModel):
     key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
-    label: str
+    label: str = Field(min_length=1, max_length=100)
     type: Literal["text", "number", "date", "select"] = "text"
     required: bool = False
-    options: list[str] = []
+    options: list[str] = Field([], max_length=200)
 
 
 class SpaceBase(BaseModel):
-    name: str | None = None
-    description: str | None = None
+    name: str | None = Field(None, min_length=1, max_length=200)
+    description: str | None = Field(None, max_length=2000)
     timezone: str | None = None
     mode: Mode | None = None
-    country: str | None = None
-    member_label: str | None = None
-    field_schema: list[FieldDef] | None = None
+    country: str | None = Field(None, max_length=8)
+    member_label: str | None = Field(None, min_length=1, max_length=40)
+    field_schema: list[FieldDef] | None = Field(None, max_length=50)
     default_shift_id: uuid.UUID | None = None
     min_rescan_minutes: int | None = Field(None, ge=0, le=240)
     match_threshold: float | None = Field(None, ge=0.3, le=0.9)
@@ -63,8 +67,24 @@ class SpaceBase(BaseModel):
         return v
 
 
+# Columns that can't be empty: a PATCH may change them but not clear them.
+REQUIRED_SPACE_FIELDS = {"name", "timezone", "mode", "member_label", "field_schema",
+                         "min_rescan_minutes", "match_threshold", "liveness_threshold",
+                         "challenge_actions", "store_failure_snapshots", "keep_enrollment_photos"}
+# Changing these changes how days are counted; applied from today (past days are kept).
+RULE_FIELDS = {"timezone", "mode", "default_shift_id", "min_rescan_minutes"}
+
+
+# Columns that can't be empty: a PATCH may change them but not clear them.
+REQUIRED_SPACE_FIELDS = {"name", "timezone", "mode", "member_label", "field_schema",
+                         "min_rescan_minutes", "match_threshold", "liveness_threshold",
+                         "challenge_actions", "store_failure_snapshots", "keep_enrollment_photos"}
+# Changing these changes how days are counted; applied from today (past days are kept).
+RULE_FIELDS = {"timezone", "mode", "default_shift_id", "min_rescan_minutes"}
+
+
 class SpaceCreate(SpaceBase):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
     timezone: str = "UTC"
     template: Literal["school", "office", "custom"] = "custom"
 
@@ -112,6 +132,8 @@ def space_out(s: Space, role: str | None = None) -> dict:
 async def create_space(body: SpaceCreate, request: Request, p: Principal = Depends(require_superadmin),
                        db: AsyncSession = Depends(get_db)):
     tpl = TEMPLATES[body.template]
+    if body.default_shift_id:
+        raise HTTPException(422, "a new space has no shifts yet; set the default shift later")
     data = body.model_dump(exclude={"template"}, exclude_none=True)
     data.setdefault("mode", tpl["mode"])
     data.setdefault("member_label", tpl["member_label"])
@@ -154,12 +176,20 @@ async def update_space(body: SpaceBase, request: Request,
                        space: Space = Depends(require_space(Role.OWNER)),
                        p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
     data = body.model_dump(exclude_unset=True)
+    empty = sorted(k for k in REQUIRED_SPACE_FIELDS if k in data and data[k] is None)
+    if empty:
+        raise HTTPException(422, f"{', '.join(empty)} cannot be empty")
+    if "description" in data and data["description"] is None:
+        data["description"] = ""
     if "default_shift_id" in data and data["default_shift_id"]:
         sh = await db.get(Shift, data["default_shift_id"])
-        if not sh or sh.space_id != space.id:
+        if not sh or sh.space_id != space.id or not sh.active:
             raise HTTPException(422, "shift belongs to another space")
+    changed = {k for k, v in data.items() if getattr(space, k) != v}
     for k, v in data.items():
         setattr(space, k, v)
+    if changed & RULE_FIELDS:
+        queue_recompute(db, space, start=space_today(space))
     audit(db, p, "space.updated", space_id=space.id, target=space.id, request=request,
           fields=sorted(data))
     await db.commit()
@@ -184,9 +214,9 @@ async def delete_space(space_id: uuid.UUID, request: Request, confirm: str = "",
 class MemberIn(BaseModel):
     full_name: str | None = Field(None, min_length=1, max_length=200)
     external_id: str | None = Field(None, min_length=1, max_length=100)
-    title: str | None = None
-    email: str | None = None
-    phone: str | None = None
+    title: str | None = Field(None, max_length=200)
+    email: str | None = Field(None, max_length=255)
+    phone: str | None = Field(None, max_length=40)
     fields: dict[str, Any] | None = None
     active: bool | None = None
     start_date: date | None = None
@@ -207,6 +237,10 @@ def validate_fields(schema: list[dict], values: dict[str, Any], partial: bool = 
         t = d.get("type", "text")
         if t == "number":
             v = float(v)
+            if not math.isfinite(v):
+                raise ValueError(f"{d['label']} must be a number")
+            if not math.isfinite(v):
+                raise ValueError(f"{d['label']} must be a number")
         elif t == "date":
             v = date.fromisoformat(str(v)[:10]).isoformat()
         elif t == "select" and str(v) not in d.get("options", []):
@@ -256,13 +290,26 @@ def member_out(m: Membership, p: Person, faces: int = 0, creds: int = 0) -> dict
     }
 
 
+def parse_ids(raw: str | None, limit: int = 500) -> list[uuid.UUID] | None:
+    """Comma-separated ids from a query string (?ids=a,b,c)."""
+    if raw is None:
+        return None
+    try:
+        ids = [uuid.UUID(x.strip()) for x in raw.split(",") if x.strip()]
+    except ValueError as e:
+        raise HTTPException(422, "ids must be a comma-separated list of ids") from e
+    if len(ids) > limit:
+        raise HTTPException(422, f"at most {limit} ids")
+    return ids
+
+
 @router.get("/spaces/{space_id}/members")
 async def list_members(q: str | None = None, active: bool | None = None, page: int = 1,
-                       size: int = 50,
+                       size: int = 50, ids: str | None = None,
                        space: Space = Depends(require_space(Role.VIEWER)),
                        db: AsyncSession = Depends(get_db)):
     size = max(1, min(size, 500))
-    items, total = await member_rows(db, space.id, q=q, active=active,
+    items, total = await member_rows(db, space.id, ids=parse_ids(ids), q=q, active=active,
                                      offset=(max(page, 1) - 1) * size, limit=size)
     return {"items": items, "total": total}
 
@@ -282,11 +329,37 @@ async def get_member(member_id: uuid.UUID, space: Space = Depends(require_space(
     return items[0]
 
 
+def _changed_fields(space: Space, m: Membership | None, values: dict[str, Any]) -> dict:
+    """On an edit, skip what the person already has: fields since removed from the space and
+    values that no longer pass newer rules (an option renamed) must not block other changes."""
+    if m is None:
+        return values
+    keys = {f["key"] for f in space.field_schema}
+    old = m.fields or {}
+    return {k: v for k, v in values.items()
+            if not (k in old and (k not in keys or old[k] == v))}
+
+
+async def _check_person_access(db: AsyncSession, p: Principal, person_id: uuid.UUID) -> Person:
+    """Adding an existing person links their identity, faces and QR card into this space.
+    Only allowed for someone who can already manage that person somewhere else."""
+    person = await db.get(Person, person_id)
+    spaces = (await db.execute(select(Membership.space_id).where(
+        Membership.person_id == person_id))).scalars().all()
+    if person and (p.is_superadmin or any(
+            (r := p.role_in(s)) and ROLE_RANK[r] >= ROLE_RANK[Role.MANAGER] for s in spaces)):
+        return person
+    raise HTTPException(404, "person not found")
+
+
 async def _upsert_member(db: AsyncSession, space: Space, body: MemberIn,
-                         m: Membership | None) -> Membership:
+                         m: Membership | None, p: Principal | None = None) -> Membership:
     try:
-        fields = (validate_fields(space.field_schema, body.fields or {}, partial=m is not None)
-                  if body.fields is not None else None)
+        # A new person is always checked, so required fields can't be skipped by leaving
+        # "fields" out of the request.
+        fields = (validate_fields(space.field_schema, _changed_fields(space, m, body.fields or {}),
+                                  partial=m is not None)
+                  if body.fields is not None or m is None else None)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     ext = body.external_id.strip() if body.external_id else None
@@ -298,9 +371,9 @@ async def _upsert_member(db: AsyncSession, space: Space, body: MemberIn,
             raise HTTPException(409, f"ID '{ext}' is already used in this space")
     if m is None:
         if body.person_id:
-            person = await db.get(Person, body.person_id)
-            if not person:
-                raise HTTPException(404, "person not found")
+            if p is None:
+                raise HTTPException(422, "person_id is not allowed here")
+            person = await _check_person_access(db, p, body.person_id)
             if (await db.execute(select(Membership.id).where(
                     Membership.space_id == space.id, Membership.person_id == person.id))).first():
                 raise HTTPException(409, "person is already in this space")
@@ -321,26 +394,41 @@ async def _upsert_member(db: AsyncSession, space: Space, body: MemberIn,
         v = getattr(body, attr)
         if v is not None:
             setattr(person, attr, v.strip() or None)
-    if body.consent is not None:
+    if body.consent is not None and bool(person.consent_at) != body.consent:
+        # Only a real change moves the date: it records when consent was given.
         person.consent_at = now() if body.consent else None
     if ext:
         m.external_id = ext
     if body.title is not None:
         m.title = body.title.strip()
     if fields is not None:
-        m.fields = {**(m.fields or {}), **fields}
-    for attr in ("active", "start_date", "end_date"):
+        keys = {f["key"] for f in space.field_schema}
+        m.fields = {k: v for k, v in {**(m.fields or {}), **fields}.items() if k in keys}
+    for attr in ("start_date", "end_date"):
         if attr in body.model_fields_set:
             setattr(m, attr, getattr(body, attr))
+    if body.active is not None and body.active != m.active:
+        set_active(m, body.active, space)
     await db.flush()
     return m
+
+
+def set_active(m: Membership, active: bool, space: Space) -> None:
+    """Deactivating records the last day (so past days stay and no new absences start);
+    reactivating removes it."""
+    m.active = active
+    today = space_today(space)
+    if not active and (m.end_date is None or m.end_date > today):
+        m.end_date = today
+    elif active and m.end_date is not None and m.end_date <= today:
+        m.end_date = None
 
 
 @router.post("/spaces/{space_id}/members", status_code=201)
 async def create_member(body: MemberIn, request: Request,
                         space: Space = Depends(require_space(Role.MANAGER)),
                         p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
-    m = await _upsert_member(db, space, body, None)
+    m = await _upsert_member(db, space, body, None, p)
     audit(db, p, "member.created", space_id=space.id, target=m.id, request=request,
           external_id=m.external_id)
     await db.commit()
@@ -368,7 +456,7 @@ async def delete_member(member_id: uuid.UUID, request: Request, erase: bool = Fa
     this space; if they belong to no other space their identity, faces and QR are erased too."""
     m = await _get_member(db, space, member_id)
     if not erase:
-        m.active = False
+        set_active(m, False, space)
         audit(db, p, "member.deactivated", space_id=space.id, target=m.id, request=request)
         await db.commit()
         return {"ok": True}
@@ -403,19 +491,33 @@ CORE_COLUMNS = {
 }
 
 
+MAX_IMPORT_ROWS = 20000
+
+
+class TooManyRows(Exception):
+    pass
+
+
 def _read_table(filename: str, data: bytes) -> list[dict[str, Any]]:
+    """Rows as dicts. Stops reading past MAX_IMPORT_ROWS (a small xlsx can hold millions)."""
+    out: list[dict[str, Any]] = []
+
+    def add(row: dict[str, Any]) -> None:
+        if len(out) >= MAX_IMPORT_ROWS:
+            raise TooManyRows
+        out.append(row)
+
     if filename.lower().endswith(".csv"):
-        text = data.decode("utf-8-sig")
-        return list(csv.DictReader(io.StringIO(text)))
+        for row in csv.DictReader(io.StringIO(data.decode("utf-8-sig"))):
+            add(row)
+        return out
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    ws = wb.active
-    rows = ws.iter_rows(values_only=True)
+    rows = wb.active.iter_rows(values_only=True)
     header = [str(h).strip() if h is not None else "" for h in next(rows, [])]
-    out = []
     for r in rows:
         if r is None or all(v in (None, "") for v in r):
             continue
-        out.append({header[i]: v for i, v in enumerate(r) if i < len(header) and header[i]})
+        add({header[i]: v for i, v in enumerate(r) if i < len(header) and header[i]})
     return out
 
 
@@ -453,11 +555,12 @@ async def import_members(request: Request, file: UploadFile = File(...), dry_run
     if len(data) > 10 * 1024 * 1024:
         raise HTTPException(413, "file too large (max 10 MB)")
     try:
-        rows = _read_table(file.filename or "", data)
+        rows = await asyncio.to_thread(_read_table, file.filename or "", data)
+    except TooManyRows as e:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            f"too many rows (max {MAX_IMPORT_ROWS})") from e
     except Exception as e:
-        raise HTTPException(422, f"could not read file: {e}") from e
-    if len(rows) > 20000:
-        raise HTTPException(413, "too many rows (max 20000)")
+        raise HTTPException(422, "could not read this file; save it as .xlsx or .csv") from e
     existing = {
         m.external_id: m for m in (await db.execute(
             select(Membership).where(Membership.space_id == space.id)

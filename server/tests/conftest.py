@@ -79,3 +79,80 @@ def face_jpeg() -> bytes:
         urllib.request.urlretrieve(  # noqa: S310
             "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/lena.jpg", path)
     return path.read_bytes()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Many tests log in; the per-IP login limit must not leak between them."""
+    from fexor_server.api import auth
+
+    auth._attempts.clear()
+    yield
+    auth._attempts.clear()
+
+
+def recent_monday():
+    """A Monday 7-13 days ago: its shifts are closed, and it stays within kiosk event limits."""
+    from datetime import date, timedelta
+
+    d = date.today() - timedelta(days=7)
+    return d - timedelta(days=d.weekday())
+
+
+async def login(app, email: str, password: str):
+    c = make_client(app)
+    r = await c.post("/api/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    c.headers["X-CSRF-Token"] = (await c.get("/api/auth/me")).json()["csrf"]
+    return c
+
+
+async def user_with_role(app, admin, space_id: str, role: str):
+    """New admin with one space role; returns a logged-in client."""
+    import uuid
+
+    email = f"{role}-{uuid.uuid4().hex[:8]}@example.com"
+    r = await admin.post("/api/users", json={"email": email, "name": role.title(),
+                                             "password": "role-password-123"})
+    assert r.status_code == 201, r.text
+    r = await admin.put(f"/api/users/{r.json()['id']}/roles", json=[{"space_id": space_id,
+                                                                     "role": role}])
+    assert r.status_code == 200, r.text
+    return await login(app, email, "role-password-123")
+
+
+async def make_space(admin, name: str | None = None, template: str = "office", tz: str = "UTC"):
+    import uuid
+
+    r = await admin.post("/api/spaces", json={"name": name or f"Space {uuid.uuid4().hex[:6]}",
+                                              "template": template, "timezone": tz})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+async def make_member(admin, sid: str, ext: str | None = None, name: str = "Jane Doe",
+                      consent: bool = True, **extra):
+    import uuid
+
+    body = {"full_name": name, "external_id": ext or uuid.uuid4().hex[:8], "consent": consent,
+            **extra}
+    r = await admin.post(f"/api/spaces/{sid}/members", json=body)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+async def make_device(app, admin, sid: str):
+    r = await admin.post(f"/api/spaces/{sid}/devices", json={"name": "Lobby kiosk"})
+    assert r.status_code == 201, r.text
+    dev = make_client(app)
+    r = await dev.post("/api/device/enroll", json={"code": r.json()["enroll_code"]})
+    assert r.status_code == 200, r.text
+    dev.headers["Authorization"] = f"Bearer {r.json()['token']}"
+    return dev
+
+
+async def run_jobs():
+    from fexor_server.worker import run_one
+
+    while await run_one():
+        pass

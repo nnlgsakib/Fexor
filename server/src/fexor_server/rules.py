@@ -117,6 +117,10 @@ def compute_day(
             r.worked_minutes = _minutes(r.last_out - r.first_in)
 
     working = shift is not None and shift.works_on(day)
+    if shift is not None and not working and not ev:
+        # A holiday or leave on someone's day off is just a day off: counting it would
+        # inflate leave/holiday totals (a 7-day leave is 5 working days for Mon-Fri staff).
+        return None
 
     if is_holiday or on_leave or (shift is not None and not working):
         if not ev:

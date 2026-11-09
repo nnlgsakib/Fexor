@@ -1,14 +1,16 @@
 import base64
 import io
 import uuid
+from datetime import timedelta
 
 import numpy as np
 from fexor_core import qr
 from openpyxl import load_workbook
 
-from .conftest import make_client
+from .conftest import make_client, recent_monday, run_jobs
 
-MON = "2026-11-02"
+_MON = recent_monday()
+MON = _MON.isoformat()
 
 
 async def _space(admin, name, template="office", tz="UTC"):
@@ -20,7 +22,7 @@ async def _space(admin, name, template="office", tz="UTC"):
 async def _member(admin, sid, ext, name="Jane Doe"):
     r = await admin.post(f"/api/spaces/{sid}/members",
                          json={"full_name": name, "external_id": ext, "title": "Engineer",
-                               "fields": {"department": "R&D"}})
+                               "fields": {"department": "R&D"}, "consent": True})
     assert r.status_code == 201, r.text
     return r.json()
 
@@ -209,19 +211,21 @@ async def test_holiday_leave_and_manual_entry(admin):
     s = await _space(admin, "Holiday office")
     sid = s["id"]
     m = await _member(admin, sid, "H1")
-    await admin.patch(f"/api/spaces/{sid}/members/{m['id']}", json={"start_date": "2026-10-01"})
-    tue, wed = "2026-11-03", "2026-11-04"
+    await admin.patch(f"/api/spaces/{sid}/members/{m['id']}",
+                      json={"start_date": str(_MON - timedelta(days=30))})
+    tue, wed, thu = (str(_MON + timedelta(days=i)) for i in (1, 2, 3))
     await admin.post(f"/api/spaces/{sid}/holidays", json={"day": tue, "name": "Founders day"})
     await admin.post(f"/api/spaces/{sid}/leaves", json={"member_id": m["id"], "start_date": wed,
                                                          "end_date": wed})
     r = await admin.post(f"/api/spaces/{sid}/events", json={
         "member_id": m["id"], "occurred_at": f"{MON}T09:00:00Z", "note": "badge reader down"})
     assert r.status_code == 201
-    r = await admin.post(f"/api/spaces/{sid}/recompute", json={"start": MON, "end": "2026-11-05"})
-    assert r.status_code == 200
+    r = await admin.post(f"/api/spaces/{sid}/recompute", json={"start": MON, "end": thu})
+    assert r.status_code == 202
+    await run_jobs()
     days = {d["day"]: d["status"] for d in
-            (await admin.get(f"/api/spaces/{sid}/days?start={MON}&end=2026-11-05")).json()}
-    assert days == {MON: "present", tue: "holiday", wed: "leave", "2026-11-05": "absent"}
+            (await admin.get(f"/api/spaces/{sid}/days?start={MON}&end={thu}")).json()}
+    assert days == {MON: "present", tue: "holiday", wed: "leave", thu: "absent"}
     r = await admin.post(f"/api/spaces/{sid}/holidays/preset", json={"country": "IN",
                                                                       "year": 2026})
     assert r.json()["imported"] > 0

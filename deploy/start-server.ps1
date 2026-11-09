@@ -89,7 +89,7 @@ function Ensure-Settings {
         $hostName = (Read-Host "Public hostname, e.g. attendance.example.com").Trim()
         $token = (Read-Host "Tunnel token").Trim()
         if (-not $hostName -or -not $token) { Fail "The hostname and the tunnel token are both needed." }
-        $lines += @("COMPOSE_PROFILES=tunnel", "CF_TUNNEL_TOKEN=$token", "FEXOR_CADDYFILE=Caddyfile.http",
+        $lines += @("COMPOSE_PROFILES=tunnel", "CF_TUNNEL_TOKEN=$token", "FEXOR_CADDYFILE=Caddyfile.tunnel",
                     "FEXOR_SECURE_COOKIES=true", "FEXOR_PUBLIC_URL=https://$hostName")
     } elseif ($mode -eq "2") {
         $domain = (Read-Host "Domain name, e.g. attendance.example.com").Trim()
@@ -105,6 +105,14 @@ function Ensure-Settings {
     Write-Host "Settings saved in deploy\.env. Keep a copy of this file somewhere safe:" -ForegroundColor Yellow
     Write-Host "it holds the key that protects the stored face data." -ForegroundColor Yellow
     Write-Host ""
+}
+
+function Update-ProxyConfig {
+    # Older tunnel installs used Caddyfile.http, which now trusts no proxy: switch them over.
+    $lines = Get-Content $envFile
+    if (-not ($lines -match "^COMPOSE_PROFILES=.*tunnel") -or -not ($lines -contains "FEXOR_CADDYFILE=Caddyfile.http")) { return }
+    $lines = $lines | ForEach-Object { if ($_ -eq "FEXOR_CADDYFILE=Caddyfile.http") { "FEXOR_CADDYFILE=Caddyfile.tunnel" } else { $_ } }
+    [System.IO.File]::WriteAllLines($envFile, $lines)
 }
 
 function Update-OfficeAddress {
@@ -187,6 +195,7 @@ try {
     Ensure-Docker
     Ensure-Settings
     Update-OfficeAddress
+    Update-ProxyConfig
     Push-Location $deploy
     try { Start-Stack; Show-Result } finally { Pop-Location }
 } catch {

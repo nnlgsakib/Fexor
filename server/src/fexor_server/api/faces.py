@@ -6,6 +6,7 @@ import uuid
 import zipfile
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import quote
 
 import cv2
 import segno
@@ -19,12 +20,14 @@ from starlette.concurrency import run_in_threadpool
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import FaceTemplate, Membership, Role, Space
+from ..models import FaceTemplate, Membership, Person, Role, Space
 from ..security import Principal, audit, current, require_space
 from ..services import current_credential, issue_credential, token_for
 
 router = APIRouter(prefix="/api", tags=["faces"])
 MAX_TEMPLATES = 10
+MAX_ZIP_PHOTOS = 500  # one request; more photos: split into several ZIP files
+NO_CONSENT = "record this person's consent before adding face photos"
 
 
 @lru_cache
@@ -84,6 +87,9 @@ async def upload_faces(member_id: uuid.UUID, request: Request,
                        space: Space = Depends(require_space(Role.MANAGER)),
                        p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
     m = await _member(db, space, member_id)
+    person = await db.get(Person, m.person_id)
+    if not person or not person.consent_at:
+        raise HTTPException(409, NO_CONSENT)
     results = []
     for f in files[:MAX_TEMPLATES]:
         data = await f.read()
@@ -109,11 +115,18 @@ async def bulk_faces(request: Request, file: UploadFile = File(...),
     members = {m.external_id.lower(): m for m in (await db.execute(
         select(Membership).where(Membership.space_id == space.id)
     )).scalars()}
+    consented = set((await db.execute(
+        select(Person.id).join(Membership, Membership.person_id == Person.id)
+        .where(Membership.space_id == space.id, Person.consent_at.is_not(None))
+    )).scalars())
+    photos = [i for i in zf.infolist()
+              if not i.is_dir() and not i.filename.rsplit("/", 1)[-1].startswith(".")
+              and re.search(r"\.(jpe?g|png|webp)$", i.filename, re.I)]
+    if len(photos) > MAX_ZIP_PHOTOS:
+        raise HTTPException(413, f"at most {MAX_ZIP_PHOTOS} photos per ZIP file; split it up")
     results = []
-    for info in zf.infolist()[:5000]:
+    for info in photos:
         name = info.filename.rsplit("/", 1)[-1]
-        if info.is_dir() or name.startswith(".") or not re.search(r"\.(jpe?g|png|webp)$", name, re.I):
-            continue
         if info.file_size > 15 * 1024 * 1024:
             results.append({"file": name, "ok": False, "error": "file_too_large"})
             continue
@@ -121,6 +134,9 @@ async def bulk_faces(request: Request, file: UploadFile = File(...),
         m = members.get(ext_id)
         if not m:
             results.append({"file": name, "ok": False, "error": "no_member_with_this_id"})
+            continue
+        if m.person_id not in consented:
+            results.append({"file": name, "ok": False, "error": "no_consent"})
             continue
         results.append(await _enroll(db, space, m, name, zf.read(info)))
     audit(db, p, "face.bulk_enrolled", space_id=space.id, request=request,
@@ -189,6 +205,9 @@ async def qr_image(member_id: uuid.UUID, fmt: Literal["svg", "png"],
                    space: Space = Depends(require_space(Role.MANAGER)),
                    db: AsyncSession = Depends(get_db)):
     m = await _member(db, space, member_id)
+    # Lock the person: two requests at once (preview + download) must not each issue a card,
+    # or the second would revoke the first one that just got printed.
+    await db.execute(select(Person.id).where(Person.id == m.person_id).with_for_update())
     cred = await current_credential(db, m.person_id)
     if cred is None:
         cred = await issue_credential(db, m.person_id)
@@ -199,6 +218,8 @@ async def qr_image(member_id: uuid.UUID, fmt: Literal["svg", "png"],
     segno.make(token, error="m").save(buf, kind=fmt, scale=6 if fmt == "svg" else 10, border=4)
     headers = {"Cache-Control": "no-store"}
     if fmt == "png":
-        headers["Content-Disposition"] = f'attachment; filename="qr-{m.external_id}.png"'
+        ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", f"qr-{m.external_id}.png")
+        headers["Content-Disposition"] = (f'attachment; filename="{ascii_name}"; '
+                                          f"filename*=UTF-8''{quote(f'qr-{m.external_id}.png')}")
     return Response(buf.getvalue(), media_type="image/svg+xml" if fmt == "svg" else "image/png",
                     headers=headers)

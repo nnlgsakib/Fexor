@@ -1,0 +1,17 @@
+# Plain HTTP on port 80 behind a Cloudflare Tunnel (cloudflared adds HTTPS).
+{
+	servers {
+		# Take the visitor's address from cloudflared, which runs in the Docker network
+		# (172.16.0.0/12), so per-person login limits keep working. Requests from anywhere
+		# else can't set it.
+		trusted_proxies static 172.16.0.0/12
+	}
+}
+
+:80 {
+	encode zstd gzip
+	request_body {
+		max_size 60MB
+	}
+	reverse_proxy server:8000
+}

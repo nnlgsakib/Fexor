@@ -38,7 +38,17 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health():
-        return {"ok": True}
+        """Also checks the database, so the container shows unhealthy when Postgres is down."""
+        from sqlalchemy import text
+
+        from .db import sessionmaker
+
+        try:
+            async with sessionmaker()() as db:
+                await db.execute(text("SELECT 1"))
+        except Exception:  # noqa: BLE001 - any failure means "not healthy"
+            return JSONResponse({"ok": False, "db": False}, status_code=503)
+        return {"ok": True, "db": True}
 
     web = s.web_dir
     if web and Path(web, "index.html").exists():

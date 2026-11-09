@@ -1,12 +1,6 @@
-# Plain HTTP on port 80: office network mode, or behind a Cloudflare Tunnel (which adds HTTPS).
-{
-	servers {
-		# Pass on the visitor's address from a proxy in front (cloudflared), so per-person
-		# login limits keep working.
-		trusted_proxies static private_ranges
-	}
-}
-
+# Plain HTTP on port 80: office network mode.
+# No trusted_proxies here: on an office network anyone could send a fake X-Forwarded-For
+# and dodge the per-address login limits. Caddy passes on the real client address.
 :80 {
 	encode zstd gzip
 	request_body {

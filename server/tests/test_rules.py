@@ -103,3 +103,28 @@ def test_dst_transition_day():
     r = day([at(sun, 0, tz=ny), at(sun, 8, tz=ny)], shift=every_day, d=sun, tz=ny,
             now=datetime(2026, 4, 1, tzinfo=ny))
     assert r.worked_minutes == 420
+
+
+def test_leave_and_holiday_on_a_day_off_count_as_day_off():
+    sat = MON + timedelta(days=5)
+    assert day([], d=sat, leave=True) is None
+    assert day([], d=sat, holiday=True) is None
+    # Working anyway is still recorded.
+    r = day([at(sat, 10)], d=sat, holiday=True)
+    assert r.status is DayStatus.HOLIDAY and "worked_unscheduled" in r.flags
+
+
+def test_autumn_dst_repeated_hour():
+    ny = ZoneInfo("America/New_York")
+    sun = date(2026, 11, 1)  # clocks go back 02:00 -> 01:00
+    s = ShiftSpec("n", time(0), time(8), frozenset(range(7)), grace_minutes=0)
+    r = compute_day(day=sun, tz=ny, mode=Mode.IN_OUT, shift=s,
+                    events=[at(sun, 0, tz=ny), at(sun, 8, tz=ny)], is_holiday=False,
+                    on_leave=False, now=datetime(2026, 12, 1, tzinfo=ny))
+    assert r.worked_minutes == 9 * 60  # the repeated hour is real time worked
+
+
+def test_very_early_check_in_belongs_to_next_days_shift():
+    early = ShiftSpec("e", time(0, 30), time(8), frozenset(range(7)), early_window_minutes=120)
+    ts = at(MON, 23, 0)  # 23:00 Monday, inside Tuesday 00:30's early window
+    assert shift_day_for(ts, TZ, lambda d: early) == MON + timedelta(days=1)

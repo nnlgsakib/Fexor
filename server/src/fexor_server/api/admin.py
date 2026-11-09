@@ -4,15 +4,15 @@ import secrets
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fexor_core import crypto
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import AdminSession, AdminUser, ApiKey, AuditLog, Role, SpaceRole, Webhook
+from ..models import AdminSession, AdminUser, ApiKey, AuditLog, Role, Space, SpaceRole, Webhook
 from ..security import (
     Principal,
     audit,
@@ -30,18 +30,28 @@ router = APIRouter(prefix="/api", tags=["admin"])
 
 # ---------- users ----------
 class UserIn(BaseModel):
-    email: str
-    name: str
-    password: str
+    email: str = Field(min_length=3, max_length=255)
+    name: str = Field(min_length=1, max_length=200)
+    password: str = Field(max_length=200)
     is_superadmin: bool = False
 
 
 class UserPatch(BaseModel):
-    name: str | None = None
+    name: str | None = Field(None, min_length=1, max_length=200)
     active: bool | None = None
     is_superadmin: bool | None = None
-    password: str | None = None
+    password: str | None = Field(None, max_length=200)
     reset_2fa: bool = False
+
+
+async def _check_spaces(db: AsyncSession, ids: set[uuid.UUID]) -> None:
+    """IDs from the client must point at existing spaces (else a database error, a 500)."""
+    if not ids:
+        return
+    found = set((await db.execute(select(Space.id).where(
+        Space.id.in_(ids), Space.deleted_at.is_(None)))).scalars())
+    if ids - found:
+        raise HTTPException(422, "space not found")
 
 
 class RoleIn(BaseModel):
@@ -114,6 +124,7 @@ async def set_roles(user_id: uuid.UUID, body: list[RoleIn], request: Request,
                     p: Principal = Depends(require_superadmin), db: AsyncSession = Depends(get_db)):
     if not await db.get(AdminUser, user_id):
         raise HTTPException(404, "user not found")
+    await _check_spaces(db, {r.space_id for r in body})
     await db.execute(delete(SpaceRole).where(SpaceRole.user_id == user_id))
     for r in {r.space_id: r for r in body}.values():
         db.add(SpaceRole(user_id=user_id, space_id=r.space_id, role=r.role))
@@ -125,7 +136,7 @@ async def set_roles(user_id: uuid.UUID, body: list[RoleIn], request: Request,
 
 # ---------- API keys ----------
 class ApiKeyIn(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
     space_id: uuid.UUID | None = None
 
 
@@ -140,6 +151,7 @@ async def list_keys(_: Principal = Depends(require_superadmin), db: AsyncSession
 @router.post("/api-keys", status_code=201)
 async def create_key(body: ApiKeyIn, request: Request, p: Principal = Depends(require_superadmin),
                      db: AsyncSession = Depends(get_db)):
+    await _check_spaces(db, {body.space_id} if body.space_id else set())
     token = "fxk_" + secrets.token_urlsafe(32)
     k = ApiKey(name=body.name, prefix=token[:10], key_hash=sha256(token), space_id=body.space_id,
                created_by=p.user.id)
@@ -185,6 +197,9 @@ async def create_hook(body: WebhookIn, request: Request, p: Principal = Depends(
                       db: AsyncSession = Depends(get_db)):
     if body.url.scheme != "https" and body.url.host not in ("localhost", "127.0.0.1"):
         raise HTTPException(422, "webhook URL must use https")
+    if len(str(body.url)) > 500:
+        raise HTTPException(422, "webhook URL is too long (max 500 characters)")
+    await _check_spaces(db, {body.space_id} if body.space_id else set())
     secret = "whsec_" + secrets.token_urlsafe(24)
     h = Webhook(url=str(body.url), space_id=body.space_id, events=list(body.events),
                 active=body.active,
@@ -210,14 +225,16 @@ async def test_hook(hook_id: uuid.UUID, _: Principal = Depends(require_superadmi
                     db: AsyncSession = Depends(get_db)):
     if not await db.get(Webhook, hook_id):
         raise HTTPException(404, "not found")
-    enqueue(db, "webhook", {"webhook_id": str(hook_id), "type": "ping", "data": {"at": str(now())}})
+    enqueue(db, "webhook", {"webhook_id": str(hook_id), "type": "ping",
+                            "event_id": str(uuid.uuid4()), "data": {"at": str(now())}})
     await db.commit()
     return {"queued": True}
 
 
 # ---------- audit ----------
 @router.get("/audit")
-async def audit_log(space_id: uuid.UUID | None = None, before: int | None = None, limit: int = 100,
+async def audit_log(space_id: uuid.UUID | None = None, before: int | None = None,
+                    limit: int = Query(100, ge=1, le=500),
                     p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
     if space_id:
         check_space(p, space_id, Role.OWNER)
@@ -228,7 +245,7 @@ async def audit_log(space_id: uuid.UUID | None = None, before: int | None = None
         q = q.where(AuditLog.space_id == space_id)
     if before:
         q = q.where(AuditLog.id < before)
-    rows = (await db.execute(q.order_by(AuditLog.id.desc()).limit(min(limit, 500)))).all()
+    rows = (await db.execute(q.order_by(AuditLog.id.desc()).limit(limit))).all()
     return [{"id": a.id, "at": a.at, "user": email, "action": a.action, "target": a.target,
              "space_id": str(a.space_id) if a.space_id else None, "detail": a.detail, "ip": a.ip}
             for a, email in rows]

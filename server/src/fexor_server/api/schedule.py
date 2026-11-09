@@ -1,11 +1,10 @@
 """Shifts, shift assignments, holidays and leave. Changes trigger a background recompute."""
 
 import uuid
-from datetime import date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, time
 
 import holidays as holidays_lib
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
@@ -14,20 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
 from ..models import Holiday, Leave, Membership, Role, Shift, ShiftAssignment, Space
 from ..security import Principal, audit, current, require_space
-from ..services import enqueue
+from ..services import queue_recompute, space_today
 
 router = APIRouter(prefix="/api", tags=["schedule"])
-RECOMPUTE_DAYS = 62  # how far back schedule edits are applied
-
-
-def queue_recompute(db: AsyncSession, space: Space, start: date | None = None,
-                    end: date | None = None) -> None:
-    today = datetime.now(ZoneInfo(space.timezone)).date()
-    end = min(end or today, today)
-    start = max(start or end - timedelta(days=RECOMPUTE_DAYS), today - timedelta(days=366))
-    if start <= end:
-        enqueue(db, "recompute_space", {"space_id": str(space.id), "start": start.isoformat(),
-                                         "end": end.isoformat()})
 
 
 # ---------- shifts ----------
@@ -108,11 +96,12 @@ async def delete_shift(shift_id: uuid.UUID, request: Request,
                        space: Space = Depends(require_space(Role.MANAGER)),
                        p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
     s = await _shift(db, space, shift_id)
-    s.active = False  # keep history intact; past days still reference it
+    s.active = False
     if space.default_shift_id == s.id:
         space.default_shift_id = None
     audit(db, p, "shift.deactivated", space_id=space.id, target=s.id, request=request)
-    queue_recompute(db, space)
+    # From today on only: past days keep the shift they were counted with.
+    queue_recompute(db, space, start=space_today(space))
     await db.commit()
     return {"ok": True}
 
@@ -156,6 +145,22 @@ async def member_assignments(member_id: uuid.UUID,
              "valid_from": a.valid_from} for a, name in rows]
 
 
+@router.delete("/spaces/{space_id}/shift-assignments/{assignment_id}")
+async def remove_assignment(assignment_id: uuid.UUID, request: Request,
+                            space: Space = Depends(require_space(Role.MANAGER)),
+                            p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
+    a = await db.get(ShiftAssignment, assignment_id)
+    m = await db.get(Membership, a.membership_id) if a else None
+    if not a or not m or m.space_id != space.id:
+        raise HTTPException(404, "assignment not found")
+    await db.delete(a)
+    audit(db, p, "shift.unassigned", space_id=space.id, target=m.id, request=request,
+          valid_from=a.valid_from)
+    queue_recompute(db, space, start=a.valid_from)
+    await db.commit()
+    return {"ok": True}
+
+
 # ---------- holidays ----------
 class HolidayIn(BaseModel):
     day: date
@@ -169,7 +174,8 @@ class PresetIn(BaseModel):
 
 
 @router.get("/spaces/{space_id}/holidays")
-async def list_holidays(year: int | None = None, space: Space = Depends(require_space(Role.VIEWER)),
+async def list_holidays(year: int | None = Query(None, ge=2000, le=2100),
+                        space: Space = Depends(require_space(Role.VIEWER)),
                         db: AsyncSession = Depends(get_db)):
     q = select(Holiday).where(Holiday.space_id == space.id)
     if year:
@@ -241,11 +247,14 @@ class LeaveIn(BaseModel):
 
 @router.get("/spaces/{space_id}/leaves")
 async def list_leaves(start: date | None = None, end: date | None = None,
+                      member_id: uuid.UUID | None = None,
                       space: Space = Depends(require_space(Role.VIEWER)),
                       db: AsyncSession = Depends(get_db)):
     q = (select(Leave, Membership.external_id)
          .join(Membership, Membership.id == Leave.membership_id)
          .where(Membership.space_id == space.id))
+    if member_id:
+        q = q.where(Leave.membership_id == member_id)
     if start:
         q = q.where(Leave.end_date >= start)
     if end:

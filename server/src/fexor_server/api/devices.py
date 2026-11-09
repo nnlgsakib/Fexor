@@ -4,8 +4,9 @@ import base64
 import hashlib
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fexor_core import crypto
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from ..config import get_settings
 from ..db import get_db
@@ -46,6 +48,9 @@ from .auth import _rate_limit
 router = APIRouter(prefix="/api", tags=["devices"])
 ENROLL_TTL = timedelta(minutes=30)
 ONLINE_WINDOW = timedelta(minutes=3)
+# Kiosk events older than this mean a wrong clock (or a very long offline spell): an admin
+# decides. It also bounds how far back one upload can make the server recalculate.
+MAX_EVENT_AGE = timedelta(days=30)
 
 
 # ---------- admin side ----------
@@ -113,11 +118,31 @@ async def new_device_code(device_id: uuid.UUID, request: Request,
     return {"enroll_code": code, "enroll_expires_at": d.enroll_expires_at}
 
 
-@router.delete("/spaces/{space_id}/devices/{device_id}")
-async def revoke_device(device_id: uuid.UUID, request: Request,
+@router.patch("/spaces/{space_id}/devices/{device_id}")
+async def rename_device(device_id: uuid.UUID, body: DeviceIn, request: Request,
                         space: Space = Depends(require_space(Role.MANAGER)),
                         p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
     d = await _device(db, space, device_id)
+    d.name = body.name.strip()
+    audit(db, p, "device.renamed", space_id=space.id, target=d.id, request=request, name=d.name)
+    await db.commit()
+    return device_out(d)
+
+
+@router.delete("/spaces/{space_id}/devices/{device_id}")
+async def revoke_device(device_id: uuid.UUID, request: Request, remove: bool = False,
+                        space: Space = Depends(require_space(Role.MANAGER)),
+                        p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
+    """Disconnect a kiosk (it stops syncing at once). remove=true then deletes a disconnected
+    kiosk from the list; its past check-ins stay."""
+    d = await _device(db, space, device_id)
+    if remove:
+        if not d.revoked_at:
+            raise HTTPException(409, "disconnect the kiosk first")
+        await db.delete(d)
+        audit(db, p, "device.removed", space_id=space.id, target=device_id, request=request)
+        await db.commit()
+        return {"ok": True}
     d.revoked_at, d.token_hash, d.enroll_code_hash = now(), None, None
     audit(db, p, "device.revoked", space_id=space.id, target=d.id, request=request)
     await db.commit()
@@ -200,7 +225,7 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
     )).all()
     person_ids = [p.id for _, p in members]
     templates: dict[uuid.UUID, list[FaceTemplate]] = {}
-    for t in (await db.execute(select(FaceTemplate).where(
+    for t in (await db.execute(select(FaceTemplate).options(defer(FaceTemplate.photo)).where(
             FaceTemplate.person_id.in_(person_ids), FaceTemplate.model_id == MODEL_ID))).scalars():
         templates.setdefault(t.person_id, []).append(t)
     creds = {c.person_id: c for c in (await db.execute(
@@ -211,11 +236,14 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
     await active_signing_key(db)  # exists before first sync, so later settings QRs verify
     keys = await public_keys(db)
 
+    today = now().astimezone(ZoneInfo(space.timezone)).date()
+    active = {m.id: _member_active(m, today) for m, _ in members}
     h = hashlib.sha256()
     h.update(f"{space.updated_at}{sorted(keys.items())}".encode())
     for m, p in sorted(members, key=lambda r: r[0].id):
         c = creds.get(p.id)
-        h.update(f"{m.id}{m.updated_at}{p.updated_at}{c.id if c else ''}".encode())
+        # active[] changes with the date alone (an end date passing), so it is hashed too.
+        h.update(f"{m.id}{m.updated_at}{p.updated_at}{c.id if c else ''}{active[m.id]}".encode())
         h.update("".join(sorted(str(t.id) for t in templates.get(p.id, []))).encode())
     etag = f'"{h.hexdigest()}"'
     await db.commit()  # persist last_seen
@@ -242,7 +270,7 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
             {
                 "id": str(m.id), "person_id": str(p.id), "name": p.full_name,
                 "external_id": m.external_id, "title": m.title,
-                "active": m.active and not (m.end_date and m.end_date < now().date()),
+                "active": active[m.id],
                 "credential_id": str(creds[p.id].id) if p.id in creds else None,
                 "templates": [
                     base64.b64encode(crypto.unseal(key, t.embedding, str(p.id).encode())).decode()
@@ -253,6 +281,11 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
         ],
         "server_time": now().isoformat(),
     }
+
+
+def _member_active(m: Membership, today: date) -> bool:
+    return m.active and (m.start_date is None or m.start_date <= today) \
+        and (m.end_date is None or today <= m.end_date)
 
 
 class EventIn(BaseModel):
@@ -296,6 +329,8 @@ async def push_events(body: EventsIn, d: Device = Depends(current_device),
             status, reason = EventStatus.REJECTED, f"unknown_member;{reason}"
         if e.occurred_at > now() + timedelta(minutes=5):
             status, reason = EventStatus.PENDING, f"device_clock_ahead;{reason}"
+        elif e.occurred_at < now() - MAX_EVENT_AGE and status == EventStatus.ACCEPTED:
+            status, reason = EventStatus.PENDING, f"device_clock_behind;{reason}"
         snap = None
         if e.snapshot_jpeg_b64 and space.store_failure_snapshots:
             try:
@@ -331,7 +366,8 @@ async def notify_webhooks(db: AsyncSession, space: Space, events: list[dict]) ->
     ))).scalars().all()
     for hid in hooks:
         for e in events:
-            enqueue(db, "webhook", {"webhook_id": str(hid), "type": "attendance.event", "data": {
+            enqueue(db, "webhook", {"webhook_id": str(hid), "type": "attendance.event",
+                                    "event_id": str(uuid.uuid4()), "data": {
                 "id": str(e["id"]), "space_id": str(space.id),
                 "member_id": str(e["membership_id"]) if e["membership_id"] else None,
                 "occurred_at": e["occurred_at"].isoformat(), "status": e["status"],

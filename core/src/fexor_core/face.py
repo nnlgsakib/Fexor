@@ -143,7 +143,10 @@ def assess(aligned: np.ndarray, face: Face, limits: QualityLimits | None = None)
 
 
 def decode_image(data: bytes) -> np.ndarray:
-    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    try:
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error as e:  # e.g. over OPENCV_IO_MAX_IMAGE_PIXELS
+        raise ValueError("image too large or damaged") from e
     if img is None:
         raise ValueError("not a decodable image")
     return img

@@ -1,5 +1,6 @@
 """Attendance events, review queue, daily records, dashboard and reports."""
 
+import asyncio
 import csv
 import io
 import uuid
@@ -33,8 +34,9 @@ from ..models import (
     Space,
 )
 from ..security import Principal, audit, current, now, require_space
-from ..services import event_dates, recompute, recompute_space
+from ..services import event_dates, queue_recompute, recompute
 from .devices import ONLINE_WINDOW, notify_webhooks
+from .spaces import parse_ids
 
 router = APIRouter(prefix="/api", tags=["attendance"])
 MAX_RANGE_DAYS = 400
@@ -160,9 +162,34 @@ async def review_event(event_id: uuid.UUID, body: ReviewIn, request: Request,
     if e.membership_id:
         start, end = event_dates(space, [e.occurred_at])
         await recompute(db, space, [e.membership_id], start, end)
+    await notify_webhooks(db, space, [dict(id=e.id, membership_id=e.membership_id,
+                                           occurred_at=e.occurred_at, status=e.status,
+                                           source=e.source, reason=e.reason)])
     audit(db, p, f"event.{body.decision}", space_id=space.id, target=e.id, request=request)
     await db.commit()
     return {"status": e.status}
+
+
+@router.delete("/spaces/{space_id}/events/{event_id}")
+async def delete_event(event_id: uuid.UUID, request: Request,
+                       space: Space = Depends(require_space(Role.MANAGER)),
+                       p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
+    """Undo a check-in an admin added by hand. Kiosk check-ins are evidence: reject them in
+    the review instead of deleting them."""
+    e = await db.get(AttendanceEvent, event_id)
+    if not e or e.space_id != space.id:
+        raise HTTPException(404, "event not found")
+    if e.source != "admin":
+        raise HTTPException(409, "only check-ins added by an admin can be removed")
+    await db.delete(e)
+    await db.flush()
+    if e.membership_id:
+        start, end = event_dates(space, [e.occurred_at])
+        await recompute(db, space, [e.membership_id], start, end)
+    audit(db, p, "event.deleted", space_id=space.id, target=e.membership_id or e.id,
+          request=request, at=e.occurred_at, note=e.note)
+    await db.commit()
+    return {"ok": True}
 
 
 @router.get("/spaces/{space_id}/events/{event_id}/snapshot")
@@ -181,13 +208,15 @@ async def event_snapshot(event_id: uuid.UUID, request: Request,
 # ---------- days ----------
 async def day_rows(db: AsyncSession, space: Space, start: date, end: date,
                    member_id: uuid.UUID | None = None, status: str | None = None,
-                   limit: int | None = None):
+                   limit: int | None = None, member_ids: list[uuid.UUID] | None = None):
     q = (select(AttendanceDay, Person.full_name, Membership.external_id, Membership.title)
          .join(Membership, Membership.id == AttendanceDay.membership_id)
          .join(Person, Person.id == Membership.person_id)
          .where(AttendanceDay.space_id == space.id, AttendanceDay.day.between(start, end)))
     if member_id:
         q = q.where(AttendanceDay.membership_id == member_id)
+    if member_ids is not None:
+        q = q.where(AttendanceDay.membership_id.in_(member_ids))
     if status:
         q = q.where(AttendanceDay.status == status)
     q = q.order_by(AttendanceDay.day.desc(), Person.full_name)
@@ -207,10 +236,12 @@ def day_out(d: AttendanceDay, name: str, ext: str, title: str) -> dict:
 @router.get("/spaces/{space_id}/days")
 async def list_days(start: date | None = None, end: date | None = None,
                     member_id: uuid.UUID | None = None, status: str | None = None,
+                    member_ids: str | None = None,
                     limit: int = 1000, space: Space = Depends(require_space(Role.VIEWER)),
                     db: AsyncSession = Depends(get_db)):
     start, end = _range(space, start, end)
-    rows = await day_rows(db, space, start, end, member_id, status, max(1, min(limit, 10000)))
+    rows = await day_rows(db, space, start, end, member_id, status, max(1, min(limit, 10000)),
+                          member_ids=parse_ids(member_ids))
     return [day_out(*r) for r in rows]
 
 
@@ -219,15 +250,16 @@ class RangeIn(BaseModel):
     end: date
 
 
-@router.post("/spaces/{space_id}/recompute")
+@router.post("/spaces/{space_id}/recompute", status_code=202)
 async def recompute_range(body: RangeIn, request: Request,
                           space: Space = Depends(require_space(Role.OWNER)),
                           p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
+    """Recalculate days with the current rules (runs in the background: it can take a while)."""
     start, end = _range(space, body.start, min(body.end, today(space)))
-    n = await recompute_space(db, space, start, end)
+    queue_recompute(db, space, start, end)
     audit(db, p, "days.recomputed", space_id=space.id, request=request, start=start, end=end)
     await db.commit()
-    return {"rows": n}
+    return {"queued": True}
 
 
 # ---------- dashboard ----------
@@ -323,12 +355,31 @@ async def dashboard(day: date | None = None, space: Space = Depends(require_spac
             "online": sum(1 for d in devices if d.last_seen_at
                           and now() - d.last_seen_at < ONLINE_WINDOW),
             "clock_drift": [d.name for d in devices
-                            if abs(float((d.info or {}).get("clock_offset_s", 0) or 0)) > 120],
+                            if abs(_number((d.info or {}).get("clock_offset_s"))) > 120],
         },
     }
 
 
+def _number(v: object) -> float:
+    """Kiosk-reported numbers are untrusted: anything unreadable counts as 0."""
+    try:
+        f = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    return f if f == f and abs(f) != float("inf") else 0.0
+
+
 # ---------- reports ----------
+FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def safe_cell(v: object) -> object:
+    """Names and IDs come from imports: text starting like a formula would run in Excel."""
+    if isinstance(v, str) and v.startswith(FORMULA_START):
+        return "'" + v
+    return v
+
+
 def _fmt(dt: datetime | None, tz: ZoneInfo) -> str:
     return dt.astimezone(tz).strftime("%Y-%m-%d %H:%M") if dt else ""
 
@@ -346,7 +397,8 @@ async def report(fmt: Literal["xlsx", "csv"], start: date | None = None, end: da
         else ["Late (min)"]) + ["Flags"]
 
     def line(d: AttendanceDay, name: str, ext: str, title: str) -> list:
-        base = [d.day.isoformat(), ext, name, title, d.status, _fmt(d.first_in, tz)]
+        base = [d.day.isoformat(), safe_cell(ext), safe_cell(name), safe_cell(title), d.status,
+                _fmt(d.first_in, tz)]
         extra = ([_fmt(d.last_out, tz), round(d.worked_minutes / 60, 2), d.late_minutes,
                   d.early_leave_minutes, d.overtime_minutes] if in_out else [d.late_minutes])
         return base + extra + [", ".join(d.flags or [])]
@@ -361,22 +413,37 @@ async def report(fmt: Literal["xlsx", "csv"], start: date | None = None, end: da
                 "Late (min)"] + (["Worked (h)"] if in_out else [])
 
     def sum_line(ext: str, name: str, s: Counter) -> list:
-        return [ext, name, s["present"], s["late"], s["half_day"], s["absent"], s["leave"],
+        return [safe_cell(ext), safe_cell(name), s["present"], s["late"], s["half_day"], s["absent"], s["leave"],
                 s["holiday"], s["late_min"]] + ([round(s["worked"] / 60, 2)] if in_out else [])
 
     fname = f"attendance-{start}-{end}"
-    if fmt == "csv":
+    title = f"{space.name}: {start} to {end}"
+
+    def build_csv() -> bytes:
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(head)
         for r in rows:
             w.writerow(line(*r))
-        return Response(buf.getvalue().encode("utf-8-sig"), media_type="text/csv",
+        return buf.getvalue().encode("utf-8-sig")
+
+    def build_xlsx() -> bytes:
+        return _xlsx(title, head, sum_head, rows, line, summary, sum_line)
+
+    # Building a big report is CPU work: keep it off the event loop so kiosks aren't stalled.
+    if fmt == "csv":
+        return Response(await asyncio.to_thread(build_csv), media_type="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="{fname}.csv"'})
+    return Response(await asyncio.to_thread(build_xlsx), media_type=(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        headers={"Content-Disposition": f'attachment; filename="{fname}.xlsx"'})
+
+
+def _xlsx(title, head, sum_head, rows, line, summary, sum_line) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Summary"
-    ws.append([f"{space.name}: {start} to {end}"])
+    ws.append([safe_cell(title)])
     ws["A1"].font = Font(bold=True, size=13)
     ws.append(sum_head)
     for c in ws[2]:
@@ -396,6 +463,4 @@ async def report(fmt: Literal["xlsx", "csv"], start: date | None = None, end: da
             sheet.column_dimensions[col[0].column_letter].width = min(max(10, width + 2), 40)
     out = io.BytesIO()
     wb.save(out)
-    return Response(out.getvalue(), media_type=(
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-        headers={"Content-Disposition": f'attachment; filename="{fname}.xlsx"'})
+    return out.getvalue()

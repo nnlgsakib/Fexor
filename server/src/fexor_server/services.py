@@ -199,13 +199,10 @@ async def recompute(
     d = start
     while d <= end:
         for mid, m in members.items():
-            # No absences before someone joined.
-            since = m.start_date or m.created_at.astimezone(ctx.tz).date()
-            active = since <= d and (m.end_date is None or d <= m.end_date)
             spec = ctx.shift_for(mid, d)
             events = by_day.get((mid, d), [])
             res = None
-            if events or (active and m.active):
+            if events or member_active_on(m, d, ctx.tz):
                 res = compute_day(
                     day=d, tz=ctx.tz, mode=space.mode, shift=spec, events=events,
                     is_holiday=d in ctx.holidays, on_leave=ctx.on_leave(mid, d), now=at,
@@ -237,6 +234,18 @@ async def recompute(
     return len(rows)
 
 
+def member_active_on(m: Membership, d: date, tz: ZoneInfo) -> bool:
+    """Whether absences can be recorded for this person on day d.
+
+    Judged by dates, never by the current active flag, so deactivating someone keeps their
+    past days. Added without a start date: from the next day (being added mid-day is not an
+    absence). Deactivated without an end date (older data): until the day of the change.
+    """
+    since = m.start_date or m.created_at.astimezone(tz).date() + timedelta(days=1)
+    until = m.end_date or (None if m.active else m.updated_at.astimezone(tz).date())
+    return since <= d and (until is None or d <= until)
+
+
 async def recompute_space(db: AsyncSession, space: Space, start: date, end: date) -> int:
     ids = list((await db.execute(
         select(Membership.id).where(Membership.space_id == space.id)
@@ -253,3 +262,21 @@ def event_dates(space: Space, times: list[datetime]) -> tuple[date, date]:
 
 def enqueue(db: AsyncSession, kind: str, payload: dict, run_at: datetime | None = None) -> None:
     db.add(Job(kind=kind, payload=payload, run_at=run_at or now()))
+
+
+RECOMPUTE_DAYS = 62  # how far back schedule edits are applied
+
+
+def space_today(space: Space) -> date:
+    return datetime.now(ZoneInfo(space.timezone)).date()
+
+
+def queue_recompute(db: AsyncSession, space: Space, start: date | None = None,
+                    end: date | None = None) -> None:
+    """Recalculate days in the background (default: the last RECOMPUTE_DAYS days)."""
+    today = space_today(space)
+    end = min(end or today, today)
+    start = max(start or end - timedelta(days=RECOMPUTE_DAYS), today - timedelta(days=366))
+    if start <= end:
+        enqueue(db, "recompute_space", {"space_id": str(space.id), "start": start.isoformat(),
+                                         "end": end.isoformat()})

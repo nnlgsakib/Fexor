@@ -34,7 +34,7 @@ FEXOR_DATA_KEY=$(head -c 32 /dev/urandom | base64)"
     cfg+="
 COMPOSE_PROFILES=tunnel
 CF_TUNNEL_TOKEN=$token
-FEXOR_CADDYFILE=Caddyfile.http
+FEXOR_CADDYFILE=Caddyfile.tunnel
 FEXOR_SECURE_COOKIES=true
 FEXOR_PUBLIC_URL=https://$host"
   elif [[ "$mode" == "2" ]]; then
@@ -56,6 +56,10 @@ FEXOR_PUBLIC_URL=http://$(lan_ip || echo localhost)"
   (umask 077 && printf '%s
 ' "$cfg" > .env)
   say "Settings saved in deploy/.env. Keep a copy somewhere safe: it holds the key that protects stored face data."
+fi
+# Older tunnel installs used Caddyfile.http, which now trusts no proxy: switch them over.
+if grep -q '^COMPOSE_PROFILES=.*tunnel' .env && grep -qx 'FEXOR_CADDYFILE=Caddyfile.http' .env; then
+  sed -i.bak 's/^FEXOR_CADDYFILE=Caddyfile\.http$/FEXOR_CADDYFILE=Caddyfile.tunnel/' .env && rm -f .env.bak
 fi
 url=$(grep '^FEXOR_PUBLIC_URL=' .env | cut -d= -f2-)
 

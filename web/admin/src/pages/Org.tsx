@@ -269,6 +269,7 @@ const ACTIONS: Record<string, string> = {
   "device.created": "Added kiosk", "device.enrolled": "Kiosk connected", "device.enroll_code": "New pairing code",
   "device.revoked": "Disconnected kiosk", "device.removed": "Removed kiosk", "device.renamed": "Renamed kiosk",
   "device.settings_token": "Opened kiosk settings",
+  "device.pin_set": "Set kiosk PIN", "device.pin_removed": "Removed kiosk PIN",
   "event.manual": "Added a time by hand", "event.deleted": "Removed a time added by hand",
   "event.approve": "Approved check-in", "event.reject": "Rejected check-in", "event.snapshot_viewed": "Viewed kiosk snapshot",
   "days.recomputed": "Recalculated days",

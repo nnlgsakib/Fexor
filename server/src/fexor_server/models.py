@@ -283,6 +283,8 @@ class Device(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_ip: Mapped[str | None] = mapped_column(String(64))
     info: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    # Salted hash of the kiosk's unlock PIN (fexor_core.pin), synced to the kiosk.
+    unlock_pin: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _now()
 

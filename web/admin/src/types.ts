@@ -116,4 +116,5 @@ export interface Device {
   revoked_at: string | null;
   online: boolean;
   enroll_pending: boolean;
+  has_pin: boolean;
 }

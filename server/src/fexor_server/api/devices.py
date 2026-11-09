@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fexor_core import crypto
 from fexor_core.face import MODEL_ID
+from fexor_core.pin import hash_pin
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -67,6 +68,7 @@ def device_out(d: Device) -> dict:
                        and not d.revoked_at),
         "enroll_pending": bool(d.enroll_code_hash and d.enroll_expires_at
                                and d.enroll_expires_at > now()),
+        "has_pin": d.unlock_pin is not None,
     }
 
 
@@ -147,6 +149,34 @@ async def revoke_device(device_id: uuid.UUID, request: Request, remove: bool = F
     audit(db, p, "device.revoked", space_id=space.id, target=d.id, request=request)
     await db.commit()
     return {"ok": True}
+
+
+class PinIn(BaseModel):
+    pin: str = Field(pattern=r"^\d{6}$")
+
+
+@router.put("/spaces/{space_id}/devices/{device_id}/pin")
+async def set_device_pin(device_id: uuid.UUID, body: PinIn, request: Request,
+                         space: Space = Depends(require_space(Role.MANAGER)),
+                         p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
+    """A PIN typed on the kiosk opens its settings and Exit, like the Settings QR. The kiosk
+    gets the salted hash at its next sync and checks the PIN offline."""
+    d = await _device(db, space, device_id)
+    d.unlock_pin = hash_pin(body.pin)
+    audit(db, p, "device.pin_set", space_id=space.id, target=d.id, request=request)
+    await db.commit()
+    return device_out(d)
+
+
+@router.delete("/spaces/{space_id}/devices/{device_id}/pin")
+async def remove_device_pin(device_id: uuid.UUID, request: Request,
+                            space: Space = Depends(require_space(Role.MANAGER)),
+                            p: Principal = Depends(current), db: AsyncSession = Depends(get_db)):
+    d = await _device(db, space, device_id)
+    d.unlock_pin = None
+    audit(db, p, "device.pin_removed", space_id=space.id, target=d.id, request=request)
+    await db.commit()
+    return device_out(d)
 
 
 SETTINGS_TTL = timedelta(minutes=10)
@@ -239,7 +269,7 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
     today = now().astimezone(ZoneInfo(space.timezone)).date()
     active = {m.id: _member_active(m, today) for m, _ in members}
     h = hashlib.sha256()
-    h.update(f"{space.updated_at}{sorted(keys.items())}".encode())
+    h.update(f"{space.updated_at}{sorted(keys.items())}{d.name}{d.unlock_pin}".encode())
     for m, p in sorted(members, key=lambda r: r[0].id):
         c = creds.get(p.id)
         # active[] changes with the date alone (an end date passing), so it is hashed too.
@@ -266,6 +296,7 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
         },
         "model_id": MODEL_ID,
         "keys": keys,
+        "device": {"id": str(d.id), "name": d.name, "unlock_pin": d.unlock_pin},
         "members": [
             {
                 "id": str(m.id), "person_id": str(p.id), "name": p.full_name,

@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, Code, Group, Image, List, Modal, Paper, Stack, Table, Text, TextInput } from "@mantine/core";
+import { Alert, Badge, Button, Code, Group, Image, List, Modal, Paper, PinInput, Stack, Table, Text, TextInput } from "@mantine/core";
 import { useDisclosure, useInterval } from "@mantine/hooks";
 import { IconPlus } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -82,6 +82,53 @@ function SettingsQrModal({ data, onClose }: { data: { name: string; token: strin
   );
 }
 
+/** A 6-digit PIN typed on the kiosk opens its settings and Exit, like the Settings QR. */
+function PinModal({ spaceId, device, onClose, onSaved }: {
+  spaceId: string; device: Device | null; onClose: () => void; onSaved: () => void;
+}) {
+  const [pin, setPin] = useState("");
+  const [again, setAgain] = useState("");
+  useEffect(() => { setPin(""); setAgain(""); }, [device]);
+  const mismatch = again.length === 6 && again !== pin;
+  const save = useMutation({
+    mutationFn: () => api(`/spaces/${spaceId}/devices/${device!.id}/pin`, { method: "PUT", json: { pin } }),
+    onSuccess: () => { notifyOk("PIN saved. The kiosk gets it at its next sync (within a minute)."); onSaved(); onClose(); },
+    onError: notifyError,
+  });
+  const remove = () => confirmAction({
+    title: "Remove the PIN?", text: "Only the Settings QR will unlock this kiosk's settings and Exit.", confirm: "Remove PIN",
+    onConfirm: async () => {
+      try { await api(`/spaces/${spaceId}/devices/${device!.id}/pin`, { method: "DELETE" }); notifyOk("PIN removed"); onSaved(); onClose(); }
+      catch (e) { notifyError(e); }
+    },
+  });
+  return (
+    <Modal opened={!!device} onClose={onClose} title={`Kiosk PIN for "${device?.name}"`}>
+      {device && (
+        <Stack>
+          <Text size="sm">Typed on the kiosk, the PIN opens its settings and lets staff exit the app, without the
+            Settings QR. Share it only with staff. After 5 wrong tries the kiosk waits 5 minutes.</Text>
+          <div>
+            <Text size="sm" fw={500} mb={6}>New PIN (6 digits)</Text>
+            <PinInput length={6} type="number" mask value={pin} onChange={setPin} aria-label="New PIN" />
+          </div>
+          <div>
+            <Text size="sm" fw={500} mb={6}>Repeat the PIN</Text>
+            <PinInput length={6} type="number" mask value={again} onChange={setAgain} aria-label="Repeat the PIN" error={mismatch} />
+            {mismatch && <Text size="sm" c="red" mt={4}>The two PINs are different</Text>}
+          </div>
+          <Group justify="space-between">
+            {device.has_pin ? <Button variant="subtle" color="red" onClick={remove}>Remove PIN</Button> : <span />}
+            <Button onClick={() => save.mutate()} loading={save.isPending} disabled={pin.length !== 6 || pin !== again}>
+              {device.has_pin ? "Change PIN" : "Save PIN"}
+            </Button>
+          </Group>
+        </Stack>
+      )}
+    </Modal>
+  );
+}
+
 export function Devices() {
   const { spaceId, space, canManage } = useSpace();
   const qc = useQueryClient();
@@ -91,6 +138,7 @@ export function Devices() {
   const [pairing, setPairing] = useState<Pairing | null>(null);
   const [settingsQr, setSettingsQr] = useState<{ name: string; token: string; expires: string } | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  const [pinFor, setPinFor] = useState<Device | null>(null);
   const refresh = () => qc.invalidateQueries({ queryKey: ["devices", spaceId] });
   const tz = space?.timezone;
 
@@ -153,7 +201,7 @@ export function Devices() {
             <Table.Tbody>
               {q.data?.map((d) => (
                 <Table.Tr key={d.id}>
-                  <Table.Td fw={500}>{d.name}</Table.Td>
+                  <Table.Td fw={500}>{d.name}{d.has_pin && <Badge ml={6} variant="light" color="gray" tt="none">PIN set</Badge>}</Table.Td>
                   <Table.Td>
                     {d.revoked_at ? <Badge color="gray" variant="light" tt="none">Disconnected</Badge>
                       : !d.enrolled_at ? <Badge color="yellow" variant="light" tt="none">Waiting for setup</Badge>
@@ -167,6 +215,7 @@ export function Devices() {
                   <Table.Td ta="right">
                     {canManage && <Group gap={6} justify="flex-end" wrap="nowrap">
                       {d.enrolled_at && !d.revoked_at && <Button size="xs" variant="default" onClick={() => openSettings(d)}>Settings QR</Button>}
+                      {!d.revoked_at && <Button size="xs" variant="default" onClick={() => setPinFor(d)}>PIN</Button>}
                       <Button size="xs" variant="default" onClick={() => newCode(d)}>{d.enrolled_at ? "Set up again" : "Show pairing QR"}</Button>
                       <Button size="xs" variant="subtle" onClick={() => setRenaming({ id: d.id, name: d.name })}>Rename</Button>
                       {!d.revoked_at && <Button size="xs" variant="subtle" color="red" onClick={() => revoke(d)}>Disconnect</Button>}
@@ -204,6 +253,7 @@ export function Devices() {
       </Modal>
       <PairingModal pairing={pairing} onClose={() => setPairing(null)} />
       <SettingsQrModal data={settingsQr} onClose={() => setSettingsQr(null)} />
+      <PinModal spaceId={spaceId} device={pinFor} onClose={() => setPinFor(null)} onSaved={refresh} />
     </>
   );
 }

@@ -316,3 +316,41 @@ def test_kiosk_screens_load_their_bundled_fonts(tmp_path):
         for f in fonts:
             r = c.get(f)
             assert r.status_code == 200 and r.content[:4] == b"wOF2", f
+
+
+# ---------- kiosk PIN ----------
+def _pinned_client(tmp_path, pin="482913"):
+    from fexor_core.pin import hash_pin
+
+    data = roster()
+    data["device"] = {"id": "dev-1", "name": "Gate", "unlock_pin": hash_pin(pin) if pin else None}
+    store = paired_store(tmp_path, data=data)
+    app = create_app(store, _NoCamera(), pipeline=FakePipe(), on_quit=lambda: None)
+    return TestClient(app), app.state.verifier
+
+
+def test_kiosk_pin_unlocks_settings_offline(tmp_path):
+    c, v = _pinned_client(tmp_path)
+    assert c.get("/api/status").json()["has_pin"] is True
+    assert c.post("/api/settings/quit").status_code == 403  # locked
+    r = c.post("/api/unlock", json={"pin": "000000"})
+    assert r.status_code == 403 and "4 tries left" in r.json()["detail"]
+    assert c.post("/api/unlock", json={"pin": "482913"}).status_code == 200
+    assert v.settings_open() and c.post("/api/settings/quit").status_code == 200
+
+
+def test_wrong_pins_lock_the_pad_for_a_while(tmp_path):
+    c, v = _pinned_client(tmp_path)
+    codes = [c.post("/api/unlock", json={"pin": "111111"}).status_code for _ in range(5)]
+    assert codes == [403, 403, 403, 403, 429]
+    r = c.post("/api/unlock", json={"pin": "482913"})  # even the right PIN waits now
+    assert r.status_code == 429 and "minute" in r.json()["detail"] and not v.settings_open()
+    assert c.post("/api/unlock", json={"pin": "12"}).status_code == 422
+    assert c.post("/api/unlock", json={"pin": "482913"}, headers={"origin": "https://evil.example"}).status_code == 403
+
+
+def test_without_a_pin_only_the_settings_qr_works(tmp_path):
+    c, _ = _pinned_client(tmp_path, pin=None)
+    assert c.get("/api/status").json()["has_pin"] is False
+    r = c.post("/api/unlock", json={"pin": "482913"})
+    assert r.status_code == 404 and "Settings QR" in r.json()["detail"]

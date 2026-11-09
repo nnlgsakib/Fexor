@@ -173,6 +173,10 @@ The app starts by itself after every sign-in. To change the camera, move the kio
 space or close the app, click **Settings QR** next to the kiosk in the admin panel and show it to
 the kiosk camera. The code works for 10 minutes and only on that kiosk.
 
+Quicker for staff standing at the kiosk: give it a **kiosk PIN** (Kiosks, **PIN**). On the kiosk, tap
+**Menu**, then type the 6 digits on the number pad. It works offline. After 5 wrong tries the pad
+locks for 5 minutes. Share the PIN only with staff: it opens settings and Exit, like the QR.
+
 ## Development
 
 Requirements: [uv](https://docs.astral.sh/uv/), Node 20+, Docker.

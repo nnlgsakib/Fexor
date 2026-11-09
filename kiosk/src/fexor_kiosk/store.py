@@ -39,6 +39,7 @@ class Roster:
     keys: dict[str, str]
     model_id: str
     by_person: dict[str, Member]
+    device: dict[str, Any] = field(default_factory=dict)  # this kiosk: name, unlock PIN hash
 
 
 def _load_key(path: Path) -> bytes:
@@ -218,4 +219,5 @@ def parse_roster(data: dict[str, Any]) -> Roster:
                        for t in m.get("templates", [])],
         )
     return Roster(space=data["space"], keys=data.get("keys", {}),
-                  model_id=data.get("model_id", ""), by_person=members)
+                  model_id=data.get("model_id", ""), by_person=members,
+                  device=data.get("device") or {})

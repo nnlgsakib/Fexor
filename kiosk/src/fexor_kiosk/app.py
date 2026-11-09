@@ -16,7 +16,8 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from fexor_core.pin import check_pin
+from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .camera import Camera, snapshot
@@ -54,6 +55,14 @@ class SetupIn(BaseModel):
 
 class CameraIn(BaseModel):
     source: str
+
+
+class PinIn(BaseModel):
+    pin: str = Field(pattern=r"^\d{6}$")
+
+
+PIN_TRIES = 5  # wrong PINs in a row before the pad locks
+PIN_LOCK_SECONDS = 300
 
 
 def allowed_hosts() -> list[str]:
@@ -135,6 +144,10 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
         asyncio.run_coroutine_threadsafe(change_with(text), loop_ref["loop"])
 
     verifier.on_server_qr = on_server_qr
+    pin_state = {"fails": 0, "locked_until": 0.0}
+
+    def pin_record() -> dict | None:
+        return (store.roster.device.get("unlock_pin") if store.roster else None) or None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -165,7 +178,34 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
                 "server_url": store.get("server_url"),
                 "sync": syncer.status, "outbox": store.outbox_size(), "camera_ok": camera.ok,
                 "camera": str(camera.source), "dev": dev, "settings_open": unlocked(),
+                "has_pin": pin_record() is not None,
                 "can_quit": on_quit is not None, "can_switch": on_switch is not None}
+
+    @app.post("/api/unlock")
+    async def unlock(body: PinIn, request: Request):
+        """The kiosk PIN opens settings and Exit, like the admin's Settings QR. Checked here,
+        offline, against the hash from the last sync. A few wrong tries lock the pad."""
+        if not _same_origin(request.headers.get("origin"), request.headers.get("host")):
+            raise HTTPException(403, "bad origin")
+        rec = pin_record()
+        if rec is None:
+            raise HTTPException(404, "No PIN is set for this kiosk. Use the Settings QR, or set a PIN "
+                                     "in the admin panel (Kiosks).")
+        wait = pin_state["locked_until"] - time.monotonic()
+        if wait > 0:
+            raise HTTPException(429, f"Too many wrong PINs. Try again in {int(wait // 60) + 1} minute(s).")
+        if await asyncio.to_thread(check_pin, body.pin, rec):
+            pin_state["fails"] = 0
+            verifier.settings_until = verifier.clock() + SETTINGS_SECONDS
+            log.info("settings opened with the kiosk PIN")
+            return {"ok": True}
+        pin_state["fails"] += 1
+        left = PIN_TRIES - pin_state["fails"]
+        if left <= 0:
+            pin_state.update(fails=0, locked_until=time.monotonic() + PIN_LOCK_SECONDS)
+            log.warning("kiosk PIN pad locked after %d wrong tries", PIN_TRIES)
+            raise HTTPException(429, f"Too many wrong PINs. Try again in {PIN_LOCK_SECONDS // 60} minutes.")
+        raise HTTPException(403, f"Wrong PIN. {left} tries left.")
 
     @app.post("/api/settings/switch")
     async def switch_session(request: Request):
@@ -309,7 +349,7 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
                         "camera": str(camera.source), "server_change": {
                             k: server_change[k] for k in ("status", "message")},
                         "revoked": syncer.status.get("error") == "revoked",
-                        "stuck": store.stuck_count(),
+                        "stuck": store.stuck_count(), "has_pin": pin_record() is not None,
                         "tz": (store.roster.space.get("timezone") if store.roster else None)}
                 if view != last_view:
                     await sock.send_text(json.dumps(view))

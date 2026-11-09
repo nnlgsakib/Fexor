@@ -408,3 +408,32 @@ async def test_security_headers_and_static_paths(app):
     assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
     assert r.headers["cache-control"] == "no-store"
     assert (await c.get("/api/does-not-exist")).status_code in (404, 405)
+
+
+# ---------- kiosk PIN ----------
+async def test_kiosk_pin_is_set_by_managers_and_synced_as_a_hash(app, admin):
+    from fexor_core.pin import check_pin
+
+    s = await make_space(admin)
+    sid = s["id"]
+    dev = await make_device(app, admin, sid)
+    did = (await admin.get(f"/api/spaces/{sid}/devices")).json()[0]["id"]
+    first = await dev.get("/api/device/sync")
+    assert first.json()["device"]["unlock_pin"] is None
+
+    viewer = await user_with_role(app, admin, sid, "viewer")
+    assert (await viewer.put(f"/api/spaces/{sid}/devices/{did}/pin", json={"pin": "123456"})).status_code == 403
+    for bad in ("12345", "abcdef", "1234567"):
+        assert (await admin.put(f"/api/spaces/{sid}/devices/{did}/pin", json={"pin": bad})).status_code == 422
+    r = await admin.put(f"/api/spaces/{sid}/devices/{did}/pin", json={"pin": "482913"})
+    assert r.status_code == 200 and r.json()["has_pin"] is True
+
+    r = await dev.get("/api/device/sync", headers={"If-None-Match": first.headers["etag"]})
+    assert r.status_code == 200  # the kiosk picks up the new PIN at its next sync
+    rec = r.json()["device"]["unlock_pin"]
+    assert "482913" not in str(rec) and check_pin("482913", rec) and not check_pin("000000", rec)
+
+    assert (await admin.delete(f"/api/spaces/{sid}/devices/{did}/pin")).status_code == 200
+    assert (await dev.get("/api/device/sync")).json()["device"]["unlock_pin"] is None
+    audit = [a["action"] for a in (await admin.get(f"/api/audit?space_id={sid}")).json()]
+    assert "device.pin_set" in audit and "device.pin_removed" in audit

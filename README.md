@@ -26,9 +26,11 @@ Server** on the desktop.
 
 - **New Docker install on Windows:** restart if asked, open Docker Desktop once, then double-click
   **Fexor - Start Server**.
-- **Update:** run the same line again. It backs up the database first, then installs the new
-  version. Settings and keys (`deploy/.env`) are kept. A server stays on its version until you
-  do this, so nothing changes on its own.
+- **Update:** run the same line again. It notices the existing install ("Updating from v0.1.1 to
+  v0.2.0"), backs up the database, downloads the new version while the old one keeps running,
+  then restarts the server on it (a few seconds offline). Settings and keys (`deploy/.env`) and
+  all data stay. If the backup or the download fails, nothing changes. A server stays on its
+  version until you do this, so nothing changes on its own.
 - **Backups:** made every day at 02:00 into `deploy/backups` (newest 14 kept). **Backup Server**
   and **Restore Server** (Mac/Linux: `./deploy/backup-server.sh`, `./deploy/restore-server.sh`)
   do it by hand. Copy `deploy/backups` to a USB drive or cloud storage now and then: a backup on

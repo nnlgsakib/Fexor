@@ -39,7 +39,8 @@ try {
 
     Get-ChildItem (Join-Path $deploy "backups") -Directory | Sort-Object Name -Descending |
         Select-Object -Skip 14 | Remove-Item -Recurse -Force
-    Done ("Backup saved in $dir ({0:N1} MB)." -f ($dump.Length / 1MB)) Green 0
+    $size = if ($dump.Length -lt 1MB) { "{0:N0} KB" -f ($dump.Length / 1KB) } else { "{0:N1} MB" -f ($dump.Length / 1MB) }
+    Done "Backup saved in $dir ($size)." Green 0
 } finally {
     Pop-Location
 }

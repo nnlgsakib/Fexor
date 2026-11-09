@@ -14,12 +14,16 @@ set -eu
 dir="${FEXOR_DIR:-$HOME/fexor-server}"
 source="${FEXOR_DOWNLOAD:-https://github.com/nnlgsakib/Fexor/releases/latest/download}"
 
-echo "Installing the Fexor server to $dir"
-if [ -f "$dir/deploy/.env" ] && [ "${FEXOR_NO_START:-}" != "1" ] && command -v docker >/dev/null \
-   && [ -x "$dir/deploy/backup-server.sh" ]; then
-  # Updating an existing server: keep a backup of the database from before the update.
-  echo "Backing up the current server before updating..."
-  "$dir/deploy/backup-server.sh" || true
+version_of() { sed -n 's/^Fexor server \([^ ]*\).*/\1/p' "$1" 2>/dev/null | head -1 | tr -d '\r'; }
+
+# Already installed here? Then this run updates it: settings and data stay.
+update=""
+if [ -f "$dir/deploy/.env" ]; then
+  update=1
+  current=$(version_of "$dir/README.txt"); current=${current:-an older version}
+  echo "Fexor is already installed in $dir ($current). Updating it to the latest version."
+else
+  echo "Installing the Fexor server to $dir"
 fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -29,6 +33,11 @@ if command -v unzip >/dev/null; then
 else
   python3 -m zipfile -e "$tmp/fexor-server.zip" "$tmp"
 fi
+if [ -n "$update" ]; then
+  latest=$(version_of "$tmp/fexor-server/README.txt")
+  if [ "$latest" = "$current" ]; then echo "Already on the latest version ($latest): reinstalling it and restarting."
+  else echo "Updating from $current to ${latest:-the latest version}."; fi
+fi
 mkdir -p "$dir"
 # Overwrites the program files; deploy/.env is not in the zip, so settings and keys stay.
 cp -R "$tmp/fexor-server/." "$dir/"
@@ -37,13 +46,17 @@ echo "Done. Start: $dir/deploy/start-server.sh   Stop: $dir/deploy/stop-server.s
 
 [ "${FEXOR_NO_START:-}" = "1" ] && exit 0
 
+# stdin is this script (curl | sh): give the setup questions the terminal, when there is one
+# (none when run by another program; then there are no questions on an update anyway).
+with_tty() { if ( : </dev/tty ) 2>/dev/null; then "$@" </dev/tty; else "$@"; fi; }
+
 if ! command -v docker >/dev/null; then
   if [ "$(uname)" = "Linux" ]; then
     echo "Installing Docker (asks for your password)..."
     curl -fsSL https://get.docker.com | sudo sh
     sudo usermod -aG docker "$(id -un)"
     # This login session doesn't have the new group yet; sg runs the start script with it.
-    sg docker -c "\"$dir/deploy/start-server.sh\"" </dev/tty
+    with_tty sg docker -c "\"$dir/deploy/start-server.sh\""
     exit 0
   fi
   echo "Install Docker Desktop (https://www.docker.com/products/docker-desktop/), open it once,"
@@ -51,5 +64,5 @@ if ! command -v docker >/dev/null; then
   exit 1
 fi
 
-# stdin is this script (curl | sh), so give the setup questions the terminal.
-"$dir/deploy/start-server.sh" </dev/tty
+export FEXOR_UPDATE="$update"  # update mode: back up, download the new version, restart
+with_tty "$dir/deploy/start-server.sh"

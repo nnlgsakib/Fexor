@@ -167,7 +167,31 @@ function Register-Backup {
     }
 }
 
+function Update-Stack {
+    # Run by the installer on an existing server (FEXOR_UPDATE=1): back up, download the new version
+    # while the old one keeps running, then restart on it. A failure stops before anything changes.
+    Write-Host "Backing up before the update..." -ForegroundColor Cyan
+    # Out-Host: anything printed inside a function becomes part of its return value in PowerShell.
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $deploy "backup-server.ps1") -Unattended | Out-Host
+    if ($LASTEXITCODE -ne 0) { Fail "The backup failed, so nothing was updated. The current version keeps running." }
+    Write-Host "Downloading the new version (the current one keeps running meanwhile)..." -ForegroundColor Cyan
+    if ((Compose pull server worker) -ne 0) {
+        Fail "Could not download the new version. Check the internet connection and run the installer again. The current version keeps running."
+    }
+    Write-Host "Stopping the old version and starting the new one (a few seconds)..." -ForegroundColor Cyan
+    $rc = Compose up -d --remove-orphans
+    if ($rc -ne 0) { return $rc }
+    # Compose keeps a running container when only the image behind its tag changed: replace them.
+    return (Compose up -d --no-deps --force-recreate server worker)
+}
+
 function Start-Stack {
+    if ($env:FEXOR_UPDATE -eq "1") {
+        $rc = Update-Stack
+        if ($rc -ne 0) { Fail "Starting the new version failed. See the messages above; 'Restore Server' brings back the backup." }
+        Wait-Ready
+        return
+    }
     Write-Host "Starting... the first time this takes a few minutes." -ForegroundColor Cyan
     # Already downloaded: start without going online, so a restart works without internet.
     if ((Image-Present) -or (Compose-Quiet pull server) -eq 0) {
@@ -179,7 +203,10 @@ function Start-Stack {
         $rc = Compose up -d --build
     }
     if ($rc -ne 0) { Fail "Starting failed. See the messages above." }
+    Wait-Ready
+}
 
+function Wait-Ready {
     Write-Host "Waiting for the server to be ready..."
     for ($i = 0; $i -lt 120; $i++) {
         $rc = Compose-Quiet exec -T server python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"

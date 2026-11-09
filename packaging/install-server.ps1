@@ -17,20 +17,32 @@ $dir = if ($env:FEXOR_DIR) { $env:FEXOR_DIR } else { Join-Path $env:USERPROFILE 
 $source = if ($env:FEXOR_DOWNLOAD) { $env:FEXOR_DOWNLOAD } else {
     "https://github.com/nnlgsakib/Fexor/releases/latest/download" }
 
-Write-Host "Installing the Fexor server to $dir" -ForegroundColor Cyan
+function Get-Version($readme) {
+    if (Test-Path $readme) {
+        $m = Select-String -Path $readme -Pattern "^Fexor server (\S+)" | Select-Object -First 1
+        if ($m) { return $m.Matches[0].Groups[1].Value }
+    }
+    return "an older version"
+}
+
+# Already installed here? Then this run updates it: settings and data stay.
 $update = Test-Path (Join-Path $dir "deploy\.env")
-if ($update -and $env:FEXOR_NO_START -ne "1" -and (Get-Command docker -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $dir "deploy\backup-server.ps1"))) {
-    # Updating an existing server: keep a backup of the database from before the update.
-    Write-Host "Backing up the current server before updating..."
-    $env:FEXOR_UNATTENDED = "1"
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir "deploy\backup-server.ps1")
-    $env:FEXOR_UNATTENDED = ""
+$current = Get-Version (Join-Path $dir "README.txt")
+if ($update) {
+    Write-Host "Fexor is already installed in $dir ($current). Updating it to the latest version." -ForegroundColor Cyan
+} else {
+    Write-Host "Installing the Fexor server to $dir" -ForegroundColor Cyan
 }
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("fexor-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
     Invoke-WebRequest -UseBasicParsing "$source/fexor-server.zip" -OutFile "$tmp\fexor-server.zip"
     Expand-Archive "$tmp\fexor-server.zip" -DestinationPath $tmp
+    $latest = Get-Version "$tmp\fexor-server\README.txt"
+    if ($update) {
+        if ($latest -eq $current) { Write-Host "Already on the latest version ($latest): reinstalling it and restarting." }
+        else { Write-Host "Updating from $current to $latest." }
+    }
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     # Overwrites the program files; deploy\.env is not in the zip, so settings and keys stay.
     Copy-Item -Recurse -Force "$tmp\fexor-server\*" $dir
@@ -64,4 +76,7 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     return
 }
 
+# On an update the start script backs up, downloads the new version, then restarts the server.
+$env:FEXOR_UPDATE = if ($update) { "1" } else { "" }
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir "deploy\start-server.ps1")
+$env:FEXOR_UPDATE = ""

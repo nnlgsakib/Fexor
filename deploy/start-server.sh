@@ -79,6 +79,20 @@ To stop this happening, reserve this computer's address in your router (DHCP res
 fi
 url=$(grep '^FEXOR_PUBLIC_URL=' .env | cut -d= -f2-)
 
+if [[ "${FEXOR_UPDATE:-}" == "1" ]]; then
+  # Run by the installer on an existing server: back up, download the new version while the old
+  # one keeps running, then restart on it. A failure stops before anything changes.
+  say "Backing up before the update..."
+  ./backup-server.sh || need "The backup failed, so nothing was updated. The current version keeps running."
+  say "Downloading the new version (the current one keeps running meanwhile)..."
+  docker compose --env-file .env pull server worker \
+    || need "Could not download the new version. Check the internet connection and run the installer again. The current version keeps running."
+  say "Stopping the old version and starting the new one (a few seconds)..."
+  # Compose keeps a running container when only the image behind its tag changed: replace them.
+  { docker compose --env-file .env up -d --remove-orphans \
+      && docker compose --env-file .env up -d --no-deps --force-recreate server worker; } \
+    || need "Starting the new version failed. ./deploy/restore-server.sh brings back the backup."
+else
 say "Starting... the first time this takes a few minutes."
 image=$(docker compose --env-file .env config --images 2>/dev/null | grep fexor-server | head -1 || true)
 # Already downloaded: start without going online, so a restart works without internet.
@@ -90,6 +104,7 @@ elif [ ! -f ../Dockerfile ]; then
 else
   echo "No ready-made server image available; building it here instead."
   docker compose --env-file .env up -d --build
+fi
 fi
 echo "Waiting for the server to be ready..."
 ready=""

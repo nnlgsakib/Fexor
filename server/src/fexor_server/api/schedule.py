@@ -28,6 +28,8 @@ class ShiftIn(BaseModel):
     early_window_minutes: int = Field(120, ge=0, le=720)
     late_window_minutes: int = Field(240, ge=0, le=720)
     half_day_minutes: int | None = Field(None, ge=1, le=1440)
+    checkin_close_minutes: int | None = Field(None, ge=0, le=720)
+    checkout_open_minutes: int | None = Field(None, ge=0, le=720)
     active: bool = True
 
     @model_validator(mode="after")
@@ -45,6 +47,8 @@ def shift_out(s: Shift) -> dict:
             "end_time": s.end_time.strftime("%H:%M"), "weekdays": s.weekdays,
             "grace_minutes": s.grace_minutes, "early_window_minutes": s.early_window_minutes,
             "late_window_minutes": s.late_window_minutes, "half_day_minutes": s.half_day_minutes,
+            "checkin_close_minutes": s.checkin_close_minutes,
+            "checkout_open_minutes": s.checkout_open_minutes,
             "active": s.active, "overnight": s.end_time <= s.start_time}
 
 

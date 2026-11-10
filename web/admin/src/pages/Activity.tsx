@@ -52,7 +52,7 @@ export function Activity() {
               <Table.Tbody>
                 {q.data?.map((e) => (
                   <Table.Tr key={e.id}>
-                    <Table.Td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(e.occurred_at, tz)}</Table.Td>
+                    <Table.Td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(e.occurred_at, tz, space?.time_format)}</Table.Td>
                     <Table.Td>{e.member_name ?? <Text c="dimmed" span>Unknown</Text>} <Text span size="xs" c="dimmed">{e.external_id}</Text></Table.Td>
                     <Table.Td><EventBadge status={e.status} /></Table.Td>
                     <Table.Td>
@@ -104,7 +104,7 @@ export function Review() {
                 <Stack gap={6} style={{ flex: 1, minWidth: 0 }}>
                   <Group justify="space-between" wrap="wrap">
                     <Text fw={650}>{e.member_name ?? "Unknown person"} <Text span c="dimmed" size="sm">{e.external_id}</Text></Text>
-                    <Text size="sm" c="dimmed">{fmtDateTime(e.occurred_at, space?.timezone)}, {e.device ?? "admin"}</Text>
+                    <Text size="sm" c="dimmed">{fmtDateTime(e.occurred_at, space?.timezone, space?.time_format)}, {e.device ?? "admin"}</Text>
                   </Group>
                   <Text size="sm">Why it needs review: {reasonText(e.reason.replace("review_requested:", ""))}</Text>
                   <Scores s={e.scores} />

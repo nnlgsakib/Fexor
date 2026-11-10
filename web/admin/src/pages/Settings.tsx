@@ -84,6 +84,12 @@ export function Settings() {
               <SegmentedControl value={f.mode} onChange={(v) => set("mode", v as Space["mode"])} disabled={ro}
                 data={[{ value: "in_out", label: "Check in and out" }, { value: "single", label: "One check per day" }]} />
             </div>
+            <div>
+              <Text size="sm" fw={500} mb={4}>Time format</Text>
+              <SegmentedControl value={f.time_format} onChange={(v) => set("time_format", v as Space["time_format"])} disabled={ro}
+                data={[{ value: "24h", label: "24-hour (16:30)" }, { value: "12h", label: "12-hour (4:30 PM)" }]} />
+              <Text size="xs" c="dimmed" mt={4}>Used on kiosks, in this panel and in reports.</Text>
+            </div>
             <SimpleGrid cols={{ base: 1, xs: 2 }}>
               <Select label="Default shift" data={(shifts.data ?? []).filter((s) => s.active).map((s) => ({ value: s.id, label: s.name }))}
                 value={f.default_shift_id} onChange={(v) => set("default_shift_id", v)} clearable disabled={ro}

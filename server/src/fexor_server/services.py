@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fexor_core import crypto, qr
+from fexor_core.schedule import shift_id_on, window_issue
 from sqlalchemy import and_, delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +25,7 @@ from .models import (
     Job,
     Leave,
     Membership,
+    Mode,
     QrCredential,
     Shift,
     ShiftAssignment,
@@ -108,6 +110,8 @@ def to_spec(s: Shift) -> ShiftSpec:
         early_window_minutes=s.early_window_minutes,
         late_window_minutes=s.late_window_minutes,
         half_day_minutes=s.half_day_minutes,
+        checkin_close_minutes=s.checkin_close_minutes,
+        checkout_open_minutes=s.checkout_open_minutes,
     )
 
 
@@ -123,10 +127,8 @@ class ScheduleContext:
         self.leaves: dict[uuid.UUID, list[tuple[date, date]]] = leaves
 
     def shift_for(self, membership_id: uuid.UUID, d: date) -> ShiftSpec | None:
-        shift_id = self.space.default_shift_id
-        for valid_from, sid in self.assignments.get(membership_id, []):  # sorted ascending
-            if valid_from <= d:
-                shift_id = sid
+        shift_id = shift_id_on(self.assignments.get(membership_id, []),
+                               self.space.default_shift_id, d)
         return self.shifts.get(shift_id) if shift_id else None
 
     def on_leave(self, membership_id: uuid.UUID, d: date) -> bool:
@@ -232,6 +234,75 @@ async def recompute(
             and_(AttendanceDay.membership_id == mid, AttendanceDay.day == dd)
         ))
     return len(rows)
+
+
+# Verified scans outside a shift's windows. Too early to check in: refused (scan again
+# later). Late check-in or early check-out: kept, and counted once an admin approves.
+WINDOW_REASONS = {"checkin_not_open": EventStatus.REJECTED,
+                  "checkin_closed": EventStatus.PENDING,
+                  "checkout_not_open": EventStatus.PENDING}
+
+
+async def window_issues(db: AsyncSession, space: Space, scans: list[tuple[uuid.UUID, datetime]],
+                        ) -> list[str | None]:
+    """For each (member, time) scan, in order: the WINDOW_REASONS key it breaks, or None.
+    Scans that pass count for the ones after them (the check-in makes the next a check-out)."""
+    if not scans:
+        return []
+    mids = list({m for m, _ in scans})
+    start, end = event_dates(space, [t for _, t in scans])
+    ctx = await ScheduleContext.load(db, space, mids, start - timedelta(days=1),
+                                     end + timedelta(days=1))
+    if all(s.checkin_close_minutes is None and s.checkout_open_minutes is None
+           for s in ctx.shifts.values()):
+        return [None] * len(scans)
+    lo = datetime.combine(start - timedelta(days=1), datetime.min.time(), ctx.tz)
+    hi = datetime.combine(end + timedelta(days=2), datetime.min.time(), ctx.tz)
+    counted: dict[uuid.UUID, list[datetime]] = defaultdict(list)
+    for mid, ts in (await db.execute(
+        select(AttendanceEvent.membership_id, AttendanceEvent.occurred_at).where(
+            AttendanceEvent.membership_id.in_(mids),
+            AttendanceEvent.status == EventStatus.ACCEPTED,
+            AttendanceEvent.occurred_at.between(lo, hi),
+        )
+    )).all():
+        counted[mid].append(ts)
+    out: list[str | None] = [None] * len(scans)
+    for i in sorted(range(len(scans)), key=lambda i: scans[i][1]):
+        mid, ts = scans[i]
+        hit = window_issue(ts, ctx.tz, lambda d, mid=mid: ctx.shift_for(mid, d), counted[mid],
+                           single=space.mode == Mode.SINGLE,
+                           min_gap_minutes=space.min_rescan_minutes)
+        if hit:
+            out[i] = hit[0]
+        else:
+            counted[mid].append(ts)
+    return out
+
+
+async def recheck_waiting(db: AsyncSession, space: Space, membership_id: uuid.UUID,
+                          around: datetime) -> list[AttendanceEvent]:
+    """After an admin accepts a scan, this person's other scans that only waited because of
+    a window (none reviewed by hand) may count now: a late check-out once the late
+    check-in is accepted. Returns the events that now count."""
+    start, end = event_dates(space, [around])
+    tz = ZoneInfo(space.timezone)
+    waiting = [e for e in (await db.execute(select(AttendanceEvent).where(
+        AttendanceEvent.membership_id == membership_id,
+        AttendanceEvent.status == EventStatus.PENDING,
+        AttendanceEvent.reviewed_at.is_(None),
+        AttendanceEvent.occurred_at.between(
+            datetime.combine(start, datetime.min.time(), tz),
+            datetime.combine(end + timedelta(days=1), datetime.min.time(), tz)),
+    ))).scalars() if e.reason.split(";")[0] in WINDOW_REASONS]
+    issues = await window_issues(db, space, [(membership_id, e.occurred_at) for e in waiting])
+    now_counting = []
+    for e, issue in zip(waiting, issues, strict=True):
+        if issue is None:
+            e.status = EventStatus.ACCEPTED
+            now_counting.append(e)
+    await db.flush()
+    return now_counting
 
 
 def member_active_on(m: Membership, d: date, tz: ZoneInfo) -> bool:

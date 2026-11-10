@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from fexor_core import crypto
+from fexor_core.schedule import clock_text
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from pydantic import BaseModel, Field
@@ -34,7 +35,7 @@ from ..models import (
     Space,
 )
 from ..security import Principal, audit, current, now, require_space
-from ..services import event_dates, queue_recompute, recompute
+from ..services import event_dates, queue_recompute, recheck_waiting, recompute
 from .devices import ONLINE_WINDOW, notify_webhooks
 from .spaces import parse_ids
 
@@ -131,10 +132,12 @@ async def manual_event(body: ManualIn, request: Request,
                         reviewed_by=p.user.id if p.user else None, reviewed_at=now())
     db.add(e)
     await db.flush()
-    start, end = event_dates(space, [occurred])
+    changed = [e, *await recheck_waiting(db, space, m.id, occurred)]
+    start, end = event_dates(space, [c.occurred_at for c in changed])
     await recompute(db, space, [m.id], start, end)
-    await notify_webhooks(db, space, [dict(id=e.id, membership_id=m.id, occurred_at=occurred,
-                                           status=e.status, source=e.source, reason=e.reason)])
+    await notify_webhooks(db, space, [dict(id=c.id, membership_id=c.membership_id,
+                                           occurred_at=c.occurred_at, status=c.status,
+                                           source=c.source, reason=c.reason) for c in changed])
     audit(db, p, "event.manual", space_id=space.id, target=m.id, request=request,
           at=occurred, note=body.note)
     await db.commit()
@@ -159,12 +162,16 @@ async def review_event(event_id: uuid.UUID, body: ReviewIn, request: Request,
     e.reviewed_by, e.reviewed_at = (p.user.id if p.user else None), now()
     if body.note:
         e.note = f"{e.note}\n[review] {body.note}".strip()[:500]
+    changed = [e]
     if e.membership_id:
-        start, end = event_dates(space, [e.occurred_at])
+        if e.status == EventStatus.ACCEPTED:
+            await db.flush()
+            changed += await recheck_waiting(db, space, e.membership_id, e.occurred_at)
+        start, end = event_dates(space, [c.occurred_at for c in changed])
         await recompute(db, space, [e.membership_id], start, end)
-    await notify_webhooks(db, space, [dict(id=e.id, membership_id=e.membership_id,
-                                           occurred_at=e.occurred_at, status=e.status,
-                                           source=e.source, reason=e.reason)])
+    await notify_webhooks(db, space, [dict(id=c.id, membership_id=c.membership_id,
+                                           occurred_at=c.occurred_at, status=c.status,
+                                           source=c.source, reason=c.reason) for c in changed])
     audit(db, p, f"event.{body.decision}", space_id=space.id, target=e.id, request=request)
     await db.commit()
     return {"status": e.status}
@@ -380,8 +387,11 @@ def safe_cell(v: object) -> object:
     return v
 
 
-def _fmt(dt: datetime | None, tz: ZoneInfo) -> str:
-    return dt.astimezone(tz).strftime("%Y-%m-%d %H:%M") if dt else ""
+def _fmt(dt: datetime | None, tz: ZoneInfo, time_format: str) -> str:
+    if not dt:
+        return ""
+    local = dt.astimezone(tz)
+    return f"{local.date().isoformat()} {clock_text(local, time_format)}"
 
 
 @router.get("/spaces/{space_id}/reports/attendance.{fmt}")
@@ -398,8 +408,8 @@ async def report(fmt: Literal["xlsx", "csv"], start: date | None = None, end: da
 
     def line(d: AttendanceDay, name: str, ext: str, title: str) -> list:
         base = [d.day.isoformat(), safe_cell(ext), safe_cell(name), safe_cell(title), d.status,
-                _fmt(d.first_in, tz)]
-        extra = ([_fmt(d.last_out, tz), round(d.worked_minutes / 60, 2), d.late_minutes,
+                _fmt(d.first_in, tz, space.time_format)]
+        extra = ([_fmt(d.last_out, tz, space.time_format), round(d.worked_minutes / 60, 2), d.late_minutes,
                   d.early_leave_minutes, d.overtime_minutes] if in_out else [d.late_minutes])
         return base + extra + [", ".join(d.flags or [])]
 

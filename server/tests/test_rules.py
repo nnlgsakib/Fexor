@@ -128,3 +128,48 @@ def test_very_early_check_in_belongs_to_next_days_shift():
     early = ShiftSpec("e", time(0, 30), time(8), frozenset(range(7)), early_window_minutes=120)
     ts = at(MON, 23, 0)  # 23:00 Monday, inside Tuesday 00:30's early window
     assert shift_day_for(ts, TZ, lambda d: early) == MON + timedelta(days=1)
+
+
+# ---------- check-in / check-out windows ----------
+from fexor_core.schedule import window_issue  # noqa: E402
+
+TIMED = ShiftSpec("timed", time(9), time(17), frozenset(range(5)), grace_minutes=10,
+                  checkin_close_minutes=30, checkout_open_minutes=0)
+
+
+def issue(ts, counted=(), shift=TIMED, single=False):
+    hit = window_issue(ts, TZ, lambda d: shift, list(counted), single=single, min_gap_minutes=2)
+    return hit[0] if hit else None
+
+
+def test_windows_off_by_default():
+    assert issue(at(MON, 3), shift=DAY) is None
+    assert issue(at(MON, 12), [at(MON, 9)], shift=DAY) is None
+
+
+def test_checkin_window():
+    assert issue(at(MON, 6, 59)) == "checkin_not_open"  # opens 2 h before start
+    assert issue(at(MON, 7)) is None
+    assert issue(at(MON, 9, 30)) is None
+    assert issue(at(MON, 9, 31)) == "checkin_closed"
+    assert issue(at(MON, 17), []) == "checkin_closed"  # no counted check-in: still a check-in
+
+
+def test_checkout_window():
+    assert issue(at(MON, 16, 59), [at(MON, 9)]) == "checkout_not_open"
+    assert issue(at(MON, 17), [at(MON, 9)]) is None
+    assert issue(at(MON, 23), [at(MON, 9)]) is None  # late check-out is fine
+    assert issue(at(MON, 9, 1), [at(MON, 9)]) is None  # double tap, not a check-out
+    assert issue(at(MON, 12), [at(MON, 9)], single=True) is None  # one scan a day: no check-out
+    assert issue(at(MON, 12), [at(MON - timedelta(days=1), 9)]) == "checkin_closed"
+
+
+def test_window_issue_gives_the_boundary_time():
+    _, when = window_issue(at(MON, 10), TZ, lambda d: TIMED, [], single=False, min_gap_minutes=2)
+    assert when == at(MON, 9, 30)
+
+
+def test_absent_once_checkin_closes():
+    assert day([], shift=TIMED, now=at(MON, 9, 29)) is None
+    assert day([], shift=TIMED, now=at(MON, 9, 31)).status is DayStatus.ABSENT
+    assert day([], shift=DAY, now=at(MON, 9, 31)) is None  # no window: at day end as before

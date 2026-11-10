@@ -29,6 +29,8 @@ from ..models import (
     Person,
     QrCredential,
     Role,
+    Shift,
+    ShiftAssignment,
     Space,
     Webhook,
 )
@@ -43,7 +45,15 @@ from ..security import (
     require_space,
     sha256,
 )
-from ..services import active_signing_key, enqueue, event_dates, public_keys, recompute
+from ..services import (
+    WINDOW_REASONS,
+    active_signing_key,
+    enqueue,
+    event_dates,
+    public_keys,
+    recompute,
+    window_issues,
+)
 from .auth import _rate_limit
 
 router = APIRouter(prefix="/api", tags=["devices"])
@@ -265,11 +275,29 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
     )).scalars()}
     await active_signing_key(db)  # exists before first sync, so later settings QRs verify
     keys = await public_keys(db)
+    # Shifts, so the kiosk can tell people about check-in and check-out windows.
+    shifts = [{
+        "id": str(s.id), "start": s.start_time.strftime("%H:%M"),
+        "end": s.end_time.strftime("%H:%M"), "weekdays": s.weekdays,
+        "early_window_minutes": s.early_window_minutes,
+        "late_window_minutes": s.late_window_minutes,
+        "checkin_close_minutes": s.checkin_close_minutes,
+        "checkout_open_minutes": s.checkout_open_minutes,
+    } for s in (await db.execute(select(Shift).where(Shift.space_id == space.id, Shift.active)
+                                 .order_by(Shift.id))).scalars()]
+    assigned: dict[uuid.UUID, list[list[str]]] = {}
+    for a in (await db.execute(
+        select(ShiftAssignment).where(ShiftAssignment.membership_id.in_([m.id for m, _ in members]))
+        .order_by(ShiftAssignment.valid_from, ShiftAssignment.id)
+    )).scalars():
+        assigned.setdefault(a.membership_id, []).append([a.valid_from.isoformat(), str(a.shift_id)])
 
     today = now().astimezone(ZoneInfo(space.timezone)).date()
     active = {m.id: _member_active(m, today) for m, _ in members}
     h = hashlib.sha256()
     h.update(f"{space.updated_at}{sorted(keys.items())}{d.name}{d.unlock_pin}".encode())
+    h.update(f"{space.default_shift_id}{shifts}{sorted((str(k), v) for k, v in assigned.items())}"
+             .encode())
     for m, p in sorted(members, key=lambda r: r[0].id):
         c = creds.get(p.id)
         # active[] changes with the date alone (an end date passing), so it is hashed too.
@@ -293,7 +321,10 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
             "challenge_actions": space.challenge_actions,
             "min_rescan_minutes": space.min_rescan_minutes,
             "store_failure_snapshots": space.store_failure_snapshots,
+            "default_shift_id": str(space.default_shift_id) if space.default_shift_id else None,
+            "time_format": space.time_format,
         },
+        "shifts": shifts,
         "model_id": MODEL_ID,
         "keys": keys,
         "device": {"id": str(d.id), "name": d.name, "unlock_pin": d.unlock_pin},
@@ -302,6 +333,7 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
                 "id": str(m.id), "person_id": str(p.id), "name": p.full_name,
                 "external_id": m.external_id, "title": m.title,
                 "active": active[m.id],
+                "shifts": assigned.get(m.id, []),
                 "credential_id": str(creds[p.id].id) if p.id in creds else None,
                 "templates": [
                     base64.b64encode(crypto.unseal(key, t.embedding, str(p.id).encode())).decode()
@@ -372,6 +404,15 @@ async def push_events(body: EventsIn, d: Device = Depends(current_device),
                          occurred_at=e.occurred_at, status=status, source="kiosk",
                          reason=reason[:200], note=e.note,
                          scores={k: v for k, v in list(e.scores.items())[:20]}, snapshot=snap))
+    # Check-in / check-out windows. Re-sent events are already stored: leave them as they are.
+    known = set((await db.execute(select(AttendanceEvent.id).where(
+        AttendanceEvent.id.in_([r["id"] for r in rows])))).scalars()) if rows else set()
+    scans = [r for r in rows if r["status"] == EventStatus.ACCEPTED and r["membership_id"]
+             and r["id"] not in known]
+    for r, issue in zip(scans, await window_issues(
+            db, space, [(r["membership_id"], r["occurred_at"]) for r in scans]), strict=True):
+        if issue:
+            r["status"], r["reason"] = WINDOW_REASONS[issue], f"{issue};{r['reason']}"[:200]
     inserted: list[uuid.UUID] = []
     if rows:
         res = await db.execute(insert(AttendanceEvent).values(rows)

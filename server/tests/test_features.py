@@ -437,3 +437,81 @@ async def test_kiosk_pin_is_set_by_managers_and_synced_as_a_hash(app, admin):
     assert (await dev.get("/api/device/sync")).json()["device"]["unlock_pin"] is None
     audit = [a["action"] for a in (await admin.get(f"/api/audit?space_id={sid}")).json()]
     assert "device.pin_set" in audit and "device.pin_removed" in audit
+
+
+async def test_checkin_and_checkout_windows(app, admin):
+    """Shift windows: late check-ins and early check-outs wait for an admin; too-early scans
+    are refused; nobody checked in once check-in closes counts as absent."""
+    s = await make_space(admin)
+    sid = s["id"]
+    shift = (await admin.get(f"/api/spaces/{sid}/shifts")).json()[0]  # General, 09:00-18:00
+    body = {k: shift[k] for k in ("name", "start_time", "end_time", "weekdays", "grace_minutes",
+                                  "early_window_minutes", "late_window_minutes",
+                                  "half_day_minutes")}
+    r = await admin.put(f"/api/spaces/{sid}/shifts/{shift['id']}",
+                        json={**body, "checkin_close_minutes": 30, "checkout_open_minutes": 0})
+    assert r.status_code == 200, r.text
+    assert (r.json()["checkin_close_minutes"], r.json()["checkout_open_minutes"]) == (30, 0)
+    start = str(MON - timedelta(days=30))
+    on_time, late, early, absent = [await make_member(admin, sid, start_date=start)
+                                    for _ in range(4)]
+    dev = await make_device(app, admin, sid)
+    t = lambda hm: f"{MON}T{hm}:00Z"  # noqa: E731
+    ev = {
+        "in": _ev(on_time["id"], t("09:05")), "too_soon": _ev(on_time["id"], t("17:00")),
+        "out": _ev(on_time["id"], t("18:05")),
+        "late_in": _ev(late["id"], t("10:00")), "late_out": _ev(late["id"], t("18:00")),
+        "night": _ev(early["id"], t("03:00")),
+    }
+    assert (await dev.post("/api/device/events", json={"events": list(ev.values())})
+            ).status_code == 200
+    review = {e["id"]: e["reason"] for e in (await admin.get(f"/api/spaces/{sid}/review")).json()}
+    assert review[ev["too_soon"]["id"]].startswith("checkout_not_open")
+    assert review[ev["late_in"]["id"]].startswith("checkin_closed")
+    assert review[ev["late_out"]["id"]].startswith("checkin_closed")
+    assert ev["in"]["id"] not in review and ev["out"]["id"] not in review
+    refused = (await admin.get(f"/api/spaces/{sid}/events?start={MON}&end={MON}"
+                               f"&status=rejected")).json()
+    assert [(e["id"], e["reason"].split(";")[0]) for e in refused] == \
+        [(ev["night"]["id"], "checkin_not_open")]
+
+    async def days():
+        rows = (await admin.get(f"/api/spaces/{sid}/days?start={MON}&end={MON}")).json()
+        return {d["member_id"]: d for d in rows}
+
+    await run_jobs()  # the worker records absences
+    d = await days()
+    assert d[on_time["id"]]["status"] == "present" and d[on_time["id"]]["last_out"]
+    assert {d[m["id"]]["status"] for m in (late, early, absent)} == {"absent"}
+
+    # The admin accepts the late arrival: their later check-out then counts by itself.
+    r = await admin.post(f"/api/spaces/{sid}/events/{ev['late_in']['id']}/review",
+                         json={"decision": "approve"})
+    assert r.status_code == 200
+    review = {e["id"] for e in (await admin.get(f"/api/spaces/{sid}/review")).json()}
+    assert ev["late_out"]["id"] not in review
+    d = (await days())[late["id"]]
+    assert d["status"] == "late" and d["late_minutes"] == 60 and d["worked_minutes"] == 480
+
+    sync = (await dev.get("/api/device/sync")).json()
+    assert sync["space"]["default_shift_id"] == shift["id"]
+    assert sync["shifts"][0]["checkin_close_minutes"] == 30
+    assert sync["members"][0]["shifts"] == []
+
+
+async def test_time_format_12h_reaches_kiosks_and_reports(app, admin):
+    s = await make_space(admin)
+    sid = s["id"]
+    assert s["time_format"] == "24h"
+    assert (await admin.patch(f"/api/spaces/{sid}", json={"time_format": "13h"})).status_code == 422
+    r = await admin.patch(f"/api/spaces/{sid}", json={"time_format": "12h"})
+    assert r.status_code == 200 and r.json()["time_format"] == "12h"
+    dev = await make_device(app, admin, sid)
+    assert (await dev.get("/api/device/sync")).json()["space"]["time_format"] == "12h"
+    m = await make_member(admin, sid, start_date=str(MON - timedelta(days=30)))
+    for hm in ("09:05", "17:30"):
+        await admin.post(f"/api/spaces/{sid}/events", json={
+            "member_id": m["id"], "occurred_at": f"{MON}T{hm}:00Z", "note": "by hand"})
+    c = await admin.get(f"/api/spaces/{sid}/reports/attendance.csv?start={MON}&end={MON}")
+    row = c.text.lstrip("﻿").splitlines()[1]
+    assert f"{MON} 9:05 AM" in row and f"{MON} 5:30 PM" in row

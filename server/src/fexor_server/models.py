@@ -139,6 +139,7 @@ class Space(Base):
         ForeignKey("shift.id", ondelete="SET NULL", use_alter=True)
     )
     min_rescan_minutes: Mapped[int] = mapped_column(Integer, default=2)
+    time_format: Mapped[str] = mapped_column(String(3), default="24h")  # "24h" | "12h"
     match_threshold: Mapped[float] = mapped_column(Float, default=0.42)
     liveness_threshold: Mapped[float] = mapped_column(Float, default=0.6)
     challenge_actions: Mapped[int] = mapped_column(Integer, default=2)
@@ -234,6 +235,10 @@ class Shift(Base):
     early_window_minutes: Mapped[int] = mapped_column(Integer, default=120)
     late_window_minutes: Mapped[int] = mapped_column(Integer, default=240)
     half_day_minutes: Mapped[int | None] = mapped_column(Integer)  # in_out only
+    # Enforced windows (None = any time): check-in closes this long after the start,
+    # check-out opens this long before the end. Outside them a scan waits for an admin.
+    checkin_close_minutes: Mapped[int | None] = mapped_column(Integer)
+    checkout_open_minutes: Mapped[int | None] = mapped_column(Integer)  # in_out only
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 

@@ -38,6 +38,7 @@ export interface Space {
   challenge_actions: number;
   store_failure_snapshots: boolean;
   keep_enrollment_photos: boolean;
+  time_format: "24h" | "12h";
   role: Role;
 }
 
@@ -68,6 +69,8 @@ export interface Shift {
   early_window_minutes: number;
   late_window_minutes: number;
   half_day_minutes: number | null;
+  checkin_close_minutes: number | null;  // null: check in any time
+  checkout_open_minutes: number | null;  // null: check out any time
   active: boolean;
   overnight: boolean;
 }

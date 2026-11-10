@@ -25,6 +25,7 @@ from fexor_core import qr
 from fexor_core.challenge import Action, Challenge, Status, random_actions
 from fexor_core.face import Face, Quality
 from fexor_core.liveness import MeshMetrics
+from fexor_core.schedule import clock_text, shift_id_on, window_issue
 
 from .store import Member, Roster, Store
 
@@ -62,6 +63,16 @@ PROMPTS = {
     Action.TURN_RIGHT: "Slowly turn your head to your right",
     Action.SMILE: "Smile",
     Action.LOOK_UP: "Look up",
+}
+
+# Verified, but outside the shift's check-in/out window. The scan is still sent; the server
+# decides (too early: refused; late or early leave: waits for an admin). {t}: the boundary.
+HELD_MESSAGES = {
+    "checkin_not_open": ("Too early", "Check-in opens at {t}. Please scan again then."),
+    "checkin_closed": ("Late", "Check-in closed at {t}. Your scan is saved and counts once "
+                               "an admin approves it."),
+    "checkout_not_open": ("Early leave", "Check-out opens at {t}. Your scan is saved and counts "
+                                         "as early leave once an admin approves it."),
 }
 
 FAIL_MESSAGES = {
@@ -518,6 +529,21 @@ class Verifier:
             return ("Already marked present" if recent else "Marked present"), True
         return ("Checked out" if recent else "Checked in"), True
 
+    def _window(self, member: Member, now: float) -> tuple[str, datetime] | None:
+        """The shift window this scan misses, if any (same rule as the server)."""
+        r = self.roster
+        if r is None or not r.shifts:
+            return None
+        offset = float(self.store.get("clock_offset") or 0)
+        counted = [datetime.fromtimestamp(t + offset, UTC)
+                   for t in self.store.recent_since(member.id, now - 2 * 86400)]
+        default = self._space("default_shift_id", None)
+        return window_issue(
+            self._event_time(now), ZoneInfo(self._space("timezone", "UTC")),
+            lambda d: r.shifts.get(shift_id_on(member.shifts, default, d)), counted,
+            single=self._space("mode", "in_out") == "single",
+            min_gap_minutes=int(self._space("min_rescan_minutes", 2)))
+
     def _record(self, status: str, reason: str, now: float, scores: dict | None = None,
                 note: str = "", snapshot: str | None = None) -> None:
         s = self.session
@@ -552,11 +578,20 @@ class Verifier:
         if ok and member:
             label, counts = self._label(member, now)
             self._record("accepted", reason, now, scores)
+            tz = ZoneInfo(self._space("timezone", "UTC"))
+            # The time recorded for the event: server-corrected, in the space's time zone.
+            fmt = self._space("time_format", "24h")
+            time_str = clock_text(self._event_time(now).astimezone(tz), fmt)
+            held = self._window(member, now) if counts else None
+            if held:
+                stamp, why = HELD_MESSAGES[held[0]]
+                self._show_result(False, member, stamp, now, time_str=time_str)
+                self.view.update(held=True, why=why.format(t=clock_text(held[1].astimezone(tz),
+                                                                        fmt)))
+                return
             if counts:
                 self.store.add_recent(member.id, now)
-            # The time recorded for the event: server-corrected, in the space's time zone.
-            self._show_result(True, member, label, now, time_str=self._event_time(now).astimezone(
-                ZoneInfo(self._space("timezone", "UTC"))).strftime("%H:%M"))
+            self._show_result(True, member, label, now, time_str=time_str)
             return
         key = reason.split(":")[0]
         self._record("rejected", reason, now, scores, snapshot=self._snapshot())

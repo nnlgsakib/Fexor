@@ -14,11 +14,14 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import date
+from datetime import time as clock
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from fexor_core import crypto
+from fexor_core.schedule import ShiftSpec
 
 
 @dataclass
@@ -31,6 +34,7 @@ class Member:
     active: bool
     credential_id: str | None
     templates: list[np.ndarray] = field(default_factory=list)
+    shifts: list[tuple[date, str]] = field(default_factory=list)  # (valid_from, shift id)
 
 
 @dataclass
@@ -40,6 +44,7 @@ class Roster:
     model_id: str
     by_person: dict[str, Member]
     device: dict[str, Any] = field(default_factory=dict)  # this kiosk: name, unlock PIN hash
+    shifts: dict[str, ShiftSpec] = field(default_factory=dict)
 
 
 def _load_key(path: Path) -> bytes:
@@ -217,7 +222,15 @@ def parse_roster(data: dict[str, Any]) -> Roster:
             credential_id=m.get("credential_id"),
             templates=[np.frombuffer(base64.b64decode(t), "<f4").copy()
                        for t in m.get("templates", [])],
+            shifts=[(date.fromisoformat(d), sid) for d, sid in m.get("shifts", [])],
         )
+    shifts = {s["id"]: ShiftSpec(
+        id=s["id"], start=clock.fromisoformat(s["start"]), end=clock.fromisoformat(s["end"]),
+        weekdays=frozenset(s["weekdays"]), early_window_minutes=s["early_window_minutes"],
+        late_window_minutes=s["late_window_minutes"],
+        checkin_close_minutes=s.get("checkin_close_minutes"),
+        checkout_open_minutes=s.get("checkout_open_minutes"),
+    ) for s in data.get("shifts", [])}
     return Roster(space=data["space"], keys=data.get("keys", {}),
                   model_id=data.get("model_id", ""), by_person=members,
-                  device=data.get("device") or {})
+                  device=data.get("device") or {}, shifts=shifts)

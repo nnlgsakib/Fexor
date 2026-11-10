@@ -67,6 +67,10 @@ release. Then open it, click **New session** and show the pairing QR from the ad
 - **Schedules.** Shifts with working days, grace period and check-in windows, including overnight
   shifts (22:00–06:00). Per-person shift changes with a start date, public holiday presets for
   ~150 countries, custom holidays, leave.
+- **Fixed check-in and check-out times (optional, per shift).** "Check-in closes 30 min after
+  start": later check-ins wait for an admin's approval, and anyone not checked in by then is
+  absent. "Check-out opens at the end": earlier check-outs count only as approved early leave.
+  Scans before check-in opens are refused. The kiosk tells the person on the spot.
 - **People.** Add by hand or import Excel/CSV with dry-run checking. Custom fields per space. Face
   photos one by one or as a zip, with automatic quality checks. Printable ID-size QR cards.
 - **Kiosk verification.** Signed QR, then a face check on the device that includes a test for

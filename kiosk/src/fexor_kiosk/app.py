@@ -350,7 +350,9 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
                             k: server_change[k] for k in ("status", "message")},
                         "revoked": syncer.status.get("error") == "revoked",
                         "stuck": store.stuck_count(), "has_pin": pin_record() is not None,
-                        "tz": (store.roster.space.get("timezone") if store.roster else None)}
+                        "tz": (store.roster.space.get("timezone") if store.roster else None),
+                        "h12": bool(store.roster
+                                    and store.roster.space.get("time_format") == "12h")}
                 if view != last_view:
                     await sock.send_text(json.dumps(view))
                     if view.get("state") == "result" and (last_view or {}).get("state") != "result":

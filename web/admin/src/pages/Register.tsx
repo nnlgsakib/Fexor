@@ -10,6 +10,7 @@ import { STATUS } from "../theme";
 import type { AttendanceEvent, DayRow, Member } from "../types";
 import {
   PageHeader, QueryState, StatusBadge, confirmAction, flagText, fmtMinutes, fmtTime, notifyError, notifyOk, useSpace,
+  type TimeFormat,
 } from "../ui";
 
 const PAGE = 60;
@@ -142,7 +143,7 @@ export function Register() {
       </QueryState>
 
       {open && (
-        <DayModal key={`${open.member.id}|${open.day}`} state={open} onClose={() => setOpen(null)} tz={space?.timezone}
+        <DayModal key={`${open.member.id}|${open.day}`} state={open} onClose={() => setOpen(null)} tz={space?.timezone} tf={space?.time_format}
           canManage={canManage} mode={space?.mode} spaceId={spaceId}
           onSaved={() => { qc.invalidateQueries({ queryKey: ["days", spaceId] }); qc.invalidateQueries({ queryKey: ["events", spaceId] }); }} />
       )}
@@ -150,8 +151,8 @@ export function Register() {
   );
 }
 
-function DayModal({ state, onClose, tz, canManage, onSaved, spaceId, mode }: {
-  state: { member: Member; day: string; row?: DayRow }; onClose: () => void; tz?: string;
+function DayModal({ state, onClose, tz, tf, canManage, onSaved, spaceId, mode }: {
+  state: { member: Member; day: string; row?: DayRow }; onClose: () => void; tz?: string; tf?: TimeFormat;
   canManage: boolean; onSaved: () => void; spaceId: string; mode?: string;
 }) {
   const [time, setTime] = useState("09:00");
@@ -169,7 +170,7 @@ function DayModal({ state, onClose, tz, canManage, onSaved, spaceId, mode }: {
     onError: notifyError,
   });
   const undo = (e: AttendanceEvent) => confirmAction({
-    title: "Remove this time?", text: `The ${fmtTime(e.occurred_at, tz)} entry added by an admin is removed and the day is recounted.`,
+    title: "Remove this time?", text: `The ${fmtTime(e.occurred_at, tz, tf)} entry added by an admin is removed and the day is recounted.`,
     confirm: "Remove",
     onConfirm: async () => {
       try { await api(`/spaces/${spaceId}/events/${e.id}`, { method: "DELETE" }); notifyOk("Removed"); onSaved(); onClose(); }
@@ -186,8 +187,8 @@ function DayModal({ state, onClose, tz, canManage, onSaved, spaceId, mode }: {
             <Group justify="space-between" mb="xs"><StatusBadge status={r.status} />
               {r.flags.length > 0 && <Text size="sm" c="dimmed">{flagText(r.flags)}</Text>}</Group>
             <Group grow>
-              <div><Text size="xs" c="dimmed">In</Text><Text fw={600}>{fmtTime(r.first_in, tz)}</Text></div>
-              {inOut && <div><Text size="xs" c="dimmed">Out</Text><Text fw={600}>{fmtTime(r.last_out, tz)}</Text></div>}
+              <div><Text size="xs" c="dimmed">In</Text><Text fw={600}>{fmtTime(r.first_in, tz, tf)}</Text></div>
+              {inOut && <div><Text size="xs" c="dimmed">Out</Text><Text fw={600}>{fmtTime(r.last_out, tz, tf)}</Text></div>}
               {inOut && <div><Text size="xs" c="dimmed">Worked</Text><Text fw={600}>{fmtMinutes(r.worked_minutes)}</Text></div>}
               <div><Text size="xs" c="dimmed">Late</Text><Text fw={600}>{fmtMinutes(r.late_minutes)}</Text></div>
             </Group>
@@ -198,7 +199,7 @@ function DayModal({ state, onClose, tz, canManage, onSaved, spaceId, mode }: {
             <Text size="sm" fw={600}>Times recorded</Text>
             {events.data!.map((e) => (
               <Group key={e.id} justify="space-between" wrap="nowrap">
-                <Text size="sm">{fmtTime(e.occurred_at, tz)} <Text span c="dimmed" size="sm">
+                <Text size="sm">{fmtTime(e.occurred_at, tz, tf)} <Text span c="dimmed" size="sm">
                   {e.source === "admin" ? `added by admin${e.note ? `: ${e.note}` : ""}` : e.device ?? "kiosk"}</Text></Text>
                 {canManage && e.source === "admin" && (
                   <ActionIcon variant="subtle" color="red" aria-label="Remove this time" onClick={() => undo(e)}><IconTrash size={16} /></ActionIcon>

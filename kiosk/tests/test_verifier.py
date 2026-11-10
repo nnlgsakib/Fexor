@@ -621,3 +621,62 @@ def test_qr_image_decode_reads_every_card():
         if decode_qr_image(_qr_png(tok)) != tok:
             missed.append(i)
     assert not missed, f"QR not read for keys {missed}"
+
+
+def timed_kiosk(tmp_path, start, end="18:00", alice_shift=None):
+    """Kiosk whose space has an enforced shift. t0 (1_000_000.0) is a Monday, 13:46 UTC."""
+    data = roster(default_shift_id="sh1")
+    data["shifts"] = [{"id": "sh1", "start": start, "end": end, "weekdays": list(range(7)),
+                       "early_window_minutes": 120, "late_window_minutes": 240,
+                       "checkin_close_minutes": 30, "checkout_open_minutes": 0},
+                      {"id": "free", "start": "00:00", "end": "23:59", "weekdays": list(range(7)),
+                       "early_window_minutes": 0, "late_window_minutes": 0,
+                       "checkin_close_minutes": None, "checkout_open_minutes": None}]
+    if alice_shift:
+        data["members"][0]["shifts"] = [["1970-01-01", alice_shift]]
+    store = paired_store(tmp_path, data)
+    pipe = FakePipe()
+    v = Verifier(store, pipe)
+    pipe.verifier = v
+    return v, pipe, store
+
+
+def scan(v, pipe, t):
+    v.step(FRAME, t)
+    start(v, pipe, token(), t)
+    run(v, t0=t)
+    return v.view
+
+
+def test_checkin_and_checkout_windows_are_told_at_the_kiosk(tmp_path):
+    v, pipe, store = timed_kiosk(tmp_path, start="13:30")  # check-in closes 14:00
+    t = 1_000_000.0
+    assert scan(v, pipe, t)["message"] == "Checked in"
+    view = scan(v, pipe, t + 600)  # 13:56, check-out opens 18:00
+    assert not view["ok"] and view["held"] and view["message"] == "Early leave"
+    assert "18:00" in view["why"] and "admin" in view["why"]
+    # Saved for the server to judge; it doesn't count here, so 18:00 is still the check-out.
+    assert [e["status"] for e in store.pending()] == ["accepted", "accepted"]
+    assert scan(v, pipe, t + 4.5 * 3600)["message"] == "Checked out"  # 18:16
+
+
+def test_late_and_too_early_check_ins(tmp_path):
+    v, pipe, _ = timed_kiosk(tmp_path, start="12:00")  # closed at 12:30
+    view = scan(v, pipe, 1_000_000.0)
+    assert view["held"] and view["message"] == "Late" and "12:30" in view["why"]
+    (tmp_path / "b").mkdir()
+    v, pipe, _ = timed_kiosk(tmp_path / "b", start="18:00", end="23:00")  # opens 16:00
+    view = scan(v, pipe, 1_000_000.0)
+    assert view["held"] and view["message"] == "Too early" and "16:00" in view["why"]
+
+
+def test_assigned_shift_without_windows_wins_over_the_default(tmp_path):
+    v, pipe, _ = timed_kiosk(tmp_path, start="12:00", alice_shift="free")
+    assert scan(v, pipe, 1_000_000.0)["message"] == "Checked in"
+
+
+def test_12_hour_times_on_the_result_card(tmp_path):
+    v, pipe, _ = timed_kiosk(tmp_path, start="12:00")  # t0 is 13:46 UTC: late
+    v.roster.space["time_format"] = "12h"
+    view = scan(v, pipe, 1_000_000.0)
+    assert view["time"] == "1:46 PM" and "12:30 PM" in view["why"]

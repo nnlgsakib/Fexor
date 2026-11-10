@@ -209,7 +209,7 @@ export function Devices() {
                       : <Badge color="orange" variant="light" tt="none">Offline</Badge>}
                     {d.info?.camera_ok === false && d.online && <Badge ml={6} color="red" variant="light" tt="none">Camera problem</Badge>}
                   </Table.Td>
-                  <Table.Td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(d.last_seen_at, tz)}</Table.Td>
+                  <Table.Td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(d.last_seen_at, tz, space?.time_format)}</Table.Td>
                   <Table.Td>{d.info?.outbox ?? "–"}</Table.Td>
                   <Table.Td><Text size="xs" c="dimmed">{[d.info?.machine, d.info?.version && `v${d.info.version}`].filter(Boolean).join(", ")}</Text></Table.Td>
                   <Table.Td ta="right">

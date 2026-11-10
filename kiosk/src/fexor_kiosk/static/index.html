@@ -165,6 +165,7 @@
     font-family: var(--display); font-weight: 800; line-height: .95; mix-blend-mode: multiply; opacity: .94;
     animation: stamp .32s cubic-bezier(.2, 1.5, .4, 1); }
   .card.bad .stamp { --inkc: var(--bad); }
+  .card.held .stamp { --inkc: #8f5c0c; }  /* verified, but outside the shift window */
   .stamp .label { font-size: clamp(30px, 6vh, 50px); }
   .stamp .time { font-size: clamp(52px, 11vh, 96px); font-variant-numeric: tabular-nums; }
   .card .why { font-size: clamp(19px, 3vh, 24px); line-height: 1.35; margin: 0; max-width: 30em; }
@@ -440,10 +441,10 @@ function tick() {
   const opts = (o) => { try { return {...o, timeZone: view.tz || undefined}; } catch { return o; } };
   const now = new Date();
   try {
-    $("clock").textContent = now.toLocaleTimeString([], opts({hour: "2-digit", minute: "2-digit"}));
+    $("clock").textContent = now.toLocaleTimeString([], opts({hour: view.h12 ? "numeric" : "2-digit", minute: "2-digit", hour12: !!view.h12}));
     $("date").textContent = now.toLocaleDateString([], opts({weekday: "long", day: "numeric", month: "long"}));
   } catch {
-    $("clock").textContent = now.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+    $("clock").textContent = now.toLocaleTimeString([], {hour: view.h12 ? "numeric" : "2-digit", minute: "2-digit", hour12: !!view.h12});
     $("date").textContent = now.toLocaleDateString([], {weekday: "long", day: "numeric", month: "long"});
   }
 }
@@ -750,14 +751,15 @@ function render(v) {
       card.style.animation = ""; $("stamp").style.animation = "";
     }
     res.classList.remove("hidden");
-    $("card").className = "card " + (v.ok ? "ok" : "bad") + (v.name ? "" : " noname");
+    $("card").className = "card " + (v.ok ? "ok" : v.held ? "held" : "bad") + (v.name ? "" : " noname");
     $("rname").textContent = v.name || "";
     $("rid").textContent = v.external_id || "";
     $("rid").classList.toggle("hidden", !v.external_id);
-    $("rlabel").textContent = v.ok ? v.message : "Not verified";
-    $("rtime").textContent = v.ok ? (v.time || "") : "";
-    $("rtime").classList.toggle("hidden", !(v.ok && v.time));
-    $("rwhy").textContent = v.ok ? "" : v.message;
+    const stamped = v.ok || v.held;  // verified: the stamp shows what happened, with the time
+    $("rlabel").textContent = stamped ? v.message : "Not verified";
+    $("rtime").textContent = stamped ? (v.time || "") : "";
+    $("rtime").classList.toggle("hidden", !(stamped && v.time));
+    $("rwhy").textContent = v.ok ? "" : v.held ? v.why : v.message;
     $("rwhy").classList.toggle("hidden", !!v.ok);
     $("review").classList.toggle("hidden", !v.can_review);
   } else res.classList.add("hidden");

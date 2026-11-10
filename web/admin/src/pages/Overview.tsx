@@ -9,7 +9,7 @@ import { Link } from "react-router";
 import { api } from "../api";
 import { STATUS } from "../theme";
 import type { AttendanceEvent, DayRow } from "../types";
-import { EventBadge, PageHeader, QueryState, dateIn, fmtDateTime, fmtMinutes, fmtTime, reasonText, useSpace } from "../ui";
+import { EventBadge, PageHeader, QueryState, type TimeFormat, dateIn, fmtDateTime, fmtMinutes, fmtTime, reasonText, useSpace } from "../ui";
 
 interface Dashboard {
   day: string;
@@ -84,7 +84,7 @@ function Stat({ label, value, color, hint, onOpen }: {
 }
 
 /** "Who was late / absent that day": the question admins ask most. */
-function WhoModal({ spaceId, day, status, tz, onClose }: { spaceId: string; day: string; status: string | null; tz?: string; onClose: () => void }) {
+function WhoModal({ spaceId, day, status, tz, tf, onClose }: { spaceId: string; day: string; status: string | null; tz?: string; tf?: TimeFormat; onClose: () => void }) {
   const q = useQuery({
     queryKey: ["days", spaceId, "who", day, status],
     queryFn: () => api<DayRow[]>(`/spaces/${spaceId}/days`, { query: { start: day, end: day, status } }),
@@ -98,7 +98,7 @@ function WhoModal({ spaceId, day, status, tz, onClose }: { spaceId: string; day:
             {q.data?.map((r) => (
               <Table.Tr key={r.member_id}>
                 <Table.Td>{r.member_name} <Text span c="dimmed" size="sm">{r.external_id}</Text></Table.Td>
-                <Table.Td ta="right">{status === "late" ? `${fmtTime(r.first_in, tz)}, ${fmtMinutes(r.late_minutes)} late` : ""}</Table.Td>
+                <Table.Td ta="right">{status === "late" ? `${fmtTime(r.first_in, tz, tf)}, ${fmtMinutes(r.late_minutes)} late` : ""}</Table.Td>
               </Table.Tr>
             ))}
           </Table.Tbody>
@@ -202,7 +202,7 @@ export function Overview() {
                     {d.recent.map((e) => (
                       <Table.Tr key={e.id}>
                         <Table.Td w={110} style={{ whiteSpace: "nowrap" }}>
-                          {dateIn(tz, new Date(e.occurred_at)) === today ? fmtTime(e.occurred_at, tz) : fmtDateTime(e.occurred_at, tz)}
+                          {dateIn(tz, new Date(e.occurred_at)) === today ? fmtTime(e.occurred_at, tz, space?.time_format) : fmtDateTime(e.occurred_at, tz, space?.time_format)}
                         </Table.Td>
                         <Table.Td>{e.member_name ?? <Text c="dimmed" span>Unknown</Text>}</Table.Td>
                         <Table.Td visibleFrom="sm"><Text size="sm" c="dimmed">{reasonText(e.reason)}</Text></Table.Td>
@@ -235,7 +235,7 @@ export function Overview() {
       )}
       </QueryState>
       )}
-      <WhoModal spaceId={spaceId} day={day} status={who} tz={tz} onClose={() => setWho(null)} />
+      <WhoModal spaceId={spaceId} day={day} status={who} tz={tz} tf={space?.time_format} onClose={() => setWho(null)} />
     </>
   );
 }

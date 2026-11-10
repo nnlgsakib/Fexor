@@ -1,73 +1,19 @@
 """Attendance rules engine. Pure functions: no DB, no clock, fully unit-tested.
 
-A "shift day" is the calendar date a shift starts on. An event belongs to the shift day
-whose window [start - early_window, end + late_window] contains it, so overnight shifts
-(22:00-06:00) attribute the 05:55 check-out to the previous date.
+Shift windows and shift days live in fexor_core.schedule (the kiosk uses them too).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+
+from fexor_core.schedule import UTC, ShiftSpec, Window, shift_day_for, shift_window
 
 from .models import DayStatus, Mode
 
-UTC = ZoneInfo("UTC")
-
-
-@dataclass(frozen=True)
-class ShiftSpec:
-    id: object
-    start: time
-    end: time
-    weekdays: frozenset[int]  # 0 = Monday
-    grace_minutes: int = 10
-    early_window_minutes: int = 120
-    late_window_minutes: int = 240
-    half_day_minutes: int | None = None
-
-    def works_on(self, d: date) -> bool:
-        return d.weekday() in self.weekdays
-
-
-@dataclass(frozen=True)
-class Window:
-    start: datetime
-    end: datetime
-    open: datetime
-    close: datetime
-
-
-def shift_window(day: date, s: ShiftSpec, tz: ZoneInfo) -> Window:
-    # Aware datetimes sharing a tzinfo subtract by wall clock in Python, which is wrong
-    # across DST changes. All arithmetic below happens in UTC.
-    start = datetime.combine(day, s.start, tz).astimezone(UTC)
-    end_day = day + timedelta(days=1) if s.end <= s.start else day
-    end = datetime.combine(end_day, s.end, tz).astimezone(UTC)
-    return Window(
-        start,
-        end,
-        start - timedelta(minutes=s.early_window_minutes),
-        end + timedelta(minutes=s.late_window_minutes),
-    )
-
-
-ShiftLookup = Callable[[date], ShiftSpec | None]
-
-
-def shift_day_for(ts: datetime, tz: ZoneInfo, shift_for: ShiftLookup) -> date:
-    """Which shift day an event belongs to."""
-    local = ts.astimezone(tz).date()
-    # Today's window first, then yesterday's (overnight), then tomorrow's (very early check-in).
-    for d in (local, local - timedelta(days=1), local + timedelta(days=1)):
-        s = shift_for(d)
-        if s and s.works_on(d):
-            w = shift_window(d, s, tz)
-            if w.open <= ts.astimezone(UTC) <= w.close:
-                return d
-    return local
+__all__ = ["UTC", "ShiftSpec", "Window", "compute_day", "dedupe", "shift_day_for", "shift_window"]
 
 
 def dedupe(events: list[datetime], min_gap_minutes: int) -> list[datetime]:
@@ -139,7 +85,10 @@ def compute_day(
     w = shift_window(day, shift, tz)
     complete = now.astimezone(UTC) >= w.close
     if not ev:
-        return DayResult(DayStatus.ABSENT) if complete else None
+        # With a check-in window, nobody can still check in once it closes.
+        closed = complete or (shift.checkin_close_minutes is not None and now.astimezone(UTC)
+                              > w.start + timedelta(minutes=shift.checkin_close_minutes))
+        return DayResult(DayStatus.ABSENT) if closed else None
 
     if r.first_in > w.start + timedelta(minutes=shift.grace_minutes):
         r.late_minutes = _minutes(r.first_in - w.start)

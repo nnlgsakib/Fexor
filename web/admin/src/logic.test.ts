@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, detailText, OFFLINE, setCsrf, statusText } from "./api";
 import { changes } from "./pages/People";
+import { clockPlus } from "./pages/Schedule";
 import { fieldKey } from "./pages/Settings";
-import { dateIn } from "./ui";
+import { dateIn, fmtClock, fmtTime } from "./ui";
 
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -83,5 +84,24 @@ describe("saving a person", () => {
     const after = { ...before, full_name: "B", fields: { house: "Red", grade: "6" } };
     expect(changes(before, after)).toEqual({ full_name: "B", fields: { grade: "6" } });
     expect(changes(before, { ...before, fields: { ...before.fields } })).toEqual({});
+  });
+});
+
+describe("shift times", () => {
+  it("adds and subtracts minutes across midnight", () => {
+    expect(clockPlus("09:00", 30)).toBe("09:30");
+    expect(clockPlus("17:00", -15)).toBe("16:45");
+    expect(clockPlus("23:50", 20)).toBe("00:10");
+    expect(clockPlus("00:10", -20)).toBe("23:50");
+  });
+});
+
+describe("time format", () => {
+  it("shows the space's 12- or 24-hour clock", () => {
+    expect(fmtClock("16:05", "12h")).toBe("4:05 PM");
+    expect(fmtClock("00:30", "12h")).toBe("12:30 AM");
+    expect(fmtClock("16:05", "24h")).toBe("16:05");
+    expect(fmtTime("2026-11-10T16:05:00Z", "UTC", "12h")).toMatch(/^4:05\s?PM$/i);
+    expect(fmtTime("2026-11-10T16:05:00Z", "UTC", "24h")).toBe("16:05");
   });
 });

@@ -91,19 +91,31 @@ export function EventBadge({ status }: { status: keyof typeof EVENT_COLORS }) {
   return <Badge variant="light" color={EVENT_COLORS[status]} tt="none">{EVENT_LABELS[status]}</Badge>;
 }
 
-export function fmtTime(iso: string | null | undefined, tz?: string) {
+/** The space's clock: 12-hour ("4:05 PM") or 24-hour ("16:05"); undefined follows the browser. */
+export type TimeFormat = Space["time_format"] | undefined;
+const clockOpts = (f: TimeFormat): Intl.DateTimeFormatOptions =>
+  f ? { hour: f === "12h" ? "numeric" : "2-digit", minute: "2-digit", hour12: f === "12h" } : { hour: "2-digit", minute: "2-digit" };
+
+export function fmtTime(iso: string | null | undefined, tz?: string, f?: TimeFormat) {
   if (!iso) return "–";
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: tz });
+  return new Date(iso).toLocaleTimeString([], { ...clockOpts(f), timeZone: tz });
 }
 
 /** Date and time; the year only when it isn't this year. */
-export function fmtDateTime(iso: string | null | undefined, tz?: string) {
+export function fmtDateTime(iso: string | null | undefined, tz?: string, f?: TimeFormat) {
   if (!iso) return "–";
   const d = new Date(iso);
   const sameYear = dateIn(tz, d).slice(0, 4) === dateIn(tz).slice(0, 4);
   return d.toLocaleString([], {
-    day: "numeric", month: "short", year: sameYear ? undefined : "numeric", hour: "2-digit", minute: "2-digit", timeZone: tz,
+    day: "numeric", month: "short", year: sameYear ? undefined : "numeric", ...clockOpts(f), timeZone: tz,
   });
+}
+
+/** "16:05" from a shift as the space shows times: "16:05" or "4:05 PM". */
+export function fmtClock(hhmm: string, f?: TimeFormat) {
+  if (f !== "12h" || !/^\d\d:\d\d$/.test(hhmm)) return hhmm;
+  const [h, m] = hhmm.split(":").map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
 }
 
 export function fmtDate(isoDate: string | null | undefined) {
@@ -141,6 +153,9 @@ const REASONS: Record<string, string> = {
   manual_review_requested: "Review requested",
   device_clock_ahead: "Kiosk clock ahead",
   device_clock_behind: "Kiosk clock behind, or very old check-in",
+  checkin_closed: "Checked in after check-in closed",
+  checkin_not_open: "Scanned before check-in opened",
+  checkout_not_open: "Checked out before check-out opened (early leave)",
   error: "Kiosk error",
 };
 

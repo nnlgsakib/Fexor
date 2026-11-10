@@ -7,17 +7,33 @@ import dayjs from "dayjs";
 import { useState } from "react";
 import { api } from "../api";
 import type { Shift } from "../types";
-import { PageHeader, QueryState, WEEKDAYS, confirmAction, notifyError, notifyOk, plural, useSpace } from "../ui";
+import { PageHeader, QueryState, type TimeFormat, WEEKDAYS, confirmAction, fmtClock, notifyError, notifyOk, plural, useSpace } from "../ui";
 
 type ShiftForm = Omit<Shift, "id" | "overnight" | "active">;
 const EMPTY: ShiftForm = {
   name: "", start_time: "09:00", end_time: "17:00", weekdays: [0, 1, 2, 3, 4], grace_minutes: 10,
   early_window_minutes: 120, late_window_minutes: 240, half_day_minutes: null,
+  checkin_close_minutes: null, checkout_open_minutes: null,
 };
+
+/** "09:00" plus 30 minutes is "09:30" (wraps past midnight). */
+export function clockPlus(hhmm: string, minutes: number) {
+  const [h, m] = hhmm.split(":").map(Number);
+  const t = (((h * 60 + m + minutes) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+}
+
+const windowsText = (s: ShiftForm, single: boolean, f: TimeFormat) => [
+  s.checkin_close_minutes != null && `in by ${fmtClock(clockPlus(s.start_time, s.checkin_close_minutes), f)}`,
+  !single && s.checkout_open_minutes != null && `out from ${fmtClock(clockPlus(s.end_time, -s.checkout_open_minutes), f)}`,
+].filter(Boolean).join(", ");
+
+const minutesOrNull = (v: string | number) => (v === "" || Number.isNaN(Number(v)) ? null : Math.max(0, Math.round(Number(v))));
 const MAX_HOLIDAY_DAYS = 120;
 
 export function Schedule() {
   const { spaceId, space, canManage } = useSpace();
+  const tf = space?.time_format;
   const qc = useQueryClient();
   const shifts = useQuery({ queryKey: ["shifts", spaceId], queryFn: () => api<Shift[]>(`/spaces/${spaceId}/shifts`) });
   const [editing, setEditing] = useState<Shift | "new" | null>(null);
@@ -40,6 +56,7 @@ export function Schedule() {
     setForm(s === "new" ? EMPTY : {
       name: s.name, start_time: s.start_time, end_time: s.end_time, weekdays: s.weekdays, grace_minutes: s.grace_minutes,
       early_window_minutes: s.early_window_minutes, late_window_minutes: s.late_window_minutes, half_day_minutes: s.half_day_minutes,
+      checkin_close_minutes: s.checkin_close_minutes, checkout_open_minutes: s.checkout_open_minutes,
     });
     setEditing(s);
   };
@@ -76,16 +93,17 @@ export function Schedule() {
                 <Table verticalSpacing="sm">
                   <Table.Thead><Table.Tr>
                     <Table.Th>Name</Table.Th><Table.Th>Hours</Table.Th><Table.Th>Days</Table.Th><Table.Th>Grace</Table.Th>
-                    {!single && <Table.Th>Half day below</Table.Th>}<Table.Th />
+                    {!single && <Table.Th>Half day below</Table.Th>}<Table.Th>Fixed times</Table.Th><Table.Th />
                   </Table.Tr></Table.Thead>
                   <Table.Tbody>
                     {active.map((s) => (
                       <Table.Tr key={s.id}>
                         <Table.Td fw={500}>{s.name} {s.id === space?.default_shift_id && <Badge ml={6} variant="light" tt="none">Default</Badge>}</Table.Td>
-                        <Table.Td style={{ whiteSpace: "nowrap" }}>{s.start_time}–{s.end_time}{s.overnight && <Text span size="xs" c="dimmed"> (overnight)</Text>}</Table.Td>
+                        <Table.Td style={{ whiteSpace: "nowrap" }}>{fmtClock(s.start_time, tf)}–{fmtClock(s.end_time, tf)}{s.overnight && <Text span size="xs" c="dimmed"> (overnight)</Text>}</Table.Td>
                         <Table.Td>{s.weekdays.map((d) => WEEKDAYS[d]).join(", ")}</Table.Td>
                         <Table.Td>{s.grace_minutes} min</Table.Td>
                         {!single && <Table.Td>{s.half_day_minutes ? `${(s.half_day_minutes / 60).toFixed(1)} h` : "–"}</Table.Td>}
+                        <Table.Td>{windowsText(s, single, tf) || "–"}</Table.Td>
                         <Table.Td ta="right">
                           {canManage && <Group gap={4} justify="flex-end" wrap="nowrap">
                             <ActionIcon variant="subtle" aria-label={`Edit ${s.name}`} onClick={() => openShift(s)}><IconPencil size={16} /></ActionIcon>
@@ -131,6 +149,24 @@ export function Schedule() {
             <NumberInput label={single ? "Check-ins counted until (min after end)" : "Latest check-out (min after end)"} min={0} max={720}
               value={form.late_window_minutes} onChange={(v) => setForm({ ...form, late_window_minutes: Number(v) || 0 })} />
           </SimpleGrid>
+          <div>
+            <Text size="sm" fw={500}>Fixed check-in and check-out times</Text>
+            <Text size="xs" c="dimmed" mb={6}>Leave empty to allow any time. A scan outside these times waits on the Review page until you approve it.</Text>
+            <SimpleGrid cols={{ base: 1, xs: 2 }}>
+              <NumberInput label="Check-in closes (min after start)" min={0} max={720} placeholder="Any time"
+                description={timesOk && form.checkin_close_minutes != null
+                  ? `Check-in ${fmtClock(clockPlus(form.start_time, -form.early_window_minutes), tf)}–${fmtClock(clockPlus(form.start_time, form.checkin_close_minutes), tf)}. Not checked in by then: absent.`
+                  : "Late check-ins count as usual"}
+                value={form.checkin_close_minutes ?? ""} onChange={(v) => setForm({ ...form, checkin_close_minutes: minutesOrNull(v) })} />
+              {!single && (
+                <NumberInput label="Check-out opens (min before end)" min={0} max={720} placeholder="Any time"
+                  description={timesOk && form.checkout_open_minutes != null
+                    ? `Check-out from ${fmtClock(clockPlus(form.end_time, -form.checkout_open_minutes), tf)}. Earlier: early leave, needs your approval.`
+                    : "People can check out any time"}
+                  value={form.checkout_open_minutes ?? ""} onChange={(v) => setForm({ ...form, checkout_open_minutes: minutesOrNull(v) })} />
+              )}
+            </SimpleGrid>
+          </div>
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setEditing(null)}>Cancel</Button>
             <Button onClick={() => saveShift.mutate()} loading={saveShift.isPending} disabled={!form.name.trim() || !form.weekdays.length || !timesOk}>Save shift</Button>

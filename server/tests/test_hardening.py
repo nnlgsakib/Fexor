@@ -340,6 +340,7 @@ async def test_webhook_retries_keep_one_event_id_and_are_signed(admin, monkeypat
     real_client = httpx.AsyncClient
     monkeypatch.setattr(worker.httpx, "AsyncClient",
                         lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(worker, "_http", None)  # the shared client is built with the mock
     r = await admin.post("/api/webhooks", json={"url": "https://hooks.example.com/x"})
     hook = r.json()
     try:
@@ -360,6 +361,7 @@ async def test_webhook_retries_keep_one_event_id_and_are_signed(admin, monkeypat
                           hashlib.sha256).hexdigest()
         assert hmac.compare_digest(v1, expect)
     finally:
+        await worker.close_http()
         await admin.delete(f"/api/webhooks/{hook['id']}")
         await run_jobs()
 

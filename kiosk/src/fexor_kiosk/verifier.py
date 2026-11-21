@@ -14,6 +14,7 @@ import time
 import uuid
 from collections import defaultdict, deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -48,6 +49,10 @@ CLOCK_JUMP = 3600.0  # a bigger step in the wall clock (NTP after boot) resets r
 # must not lock out a person who did nothing wrong.
 LOCKOUT_REASONS = {"face_mismatch", "face_matches_other", "liveness_failed", "face_changed",
                    "challenge"}
+
+# A blink the camera can't see is most often dark glasses: say so before the step times out.
+SUNGLASSES_HINT_AFTER = 3.0
+SUNGLASSES_PROMPT = "Blink your eyes. If you wear sunglasses, please take them off."
 
 QUALITY_HINTS = {
     "face_too_small": "Come a little closer",
@@ -86,6 +91,8 @@ FAIL_MESSAGES = {
     "liveness_failed": "Live face check failed. Make sure your face is well lit.",
     "face_changed": "A different face appeared. Please try again alone.",
     "challenge": "Movement check failed. Please follow the instructions.",
+    "challenge:timeout:blink": "Your blink was not seen. If you wear sunglasses, please take them "
+                               "off and try again.",
     "timeout": "Verification timed out. Please try again.",
     "error": "Something went wrong on this kiosk. Please try again.",
 }
@@ -187,6 +194,10 @@ class Verifier:
         self._idle_tick = 0
         self._gallery_cache: tuple[Roster, np.ndarray, list[str]] | None = None
         self._stop = threading.Event()
+        # Anti-spoof runs here while the face mesh runs on the verifier thread: two independent
+        # models on the same frame (onnxruntime releases the GIL). On x86, also pinned to 2 or 4
+        # cores, the pair took ~40% less time. `fexor-kiosk bench` shows it on the kiosk itself.
+        self._spoof_pool = ThreadPoolExecutor(1, thread_name_prefix="antispoof")
 
     # ---------- commands from the UI (thread-safe) ----------
     def command(self, cmd: str) -> None:
@@ -228,6 +239,7 @@ class Verifier:
                 continue
             seq, frame = self.camera.latest(seq, timeout=1.0)
             self.tick(frame, self.clock())
+        self._spoof_pool.shutdown(wait=True)
 
     def tick(self, frame: np.ndarray | None, now: float) -> None:
         """step() that never lets an error escape. A failure in the middle of someone's check
@@ -435,8 +447,10 @@ class Verifier:
         s.last_box, s.last_frame, s.last_face = face.box, frame, face
         s.frames += 1
 
-        s.spoof.append(self.pipe.spoof(frame, face))
-        status = s.challenge.feed(self.pipe.mesh(frame, face), now)
+        spoof = self._spoof_pool.submit(self.pipe.spoof, frame, face)
+        metrics = self.pipe.mesh(frame, face)
+        s.spoof.append(spoof.result())  # its error, if any, ends the check like any other
+        status = s.challenge.feed(metrics, now)
         hint = None
         if s.frames % EMBED_EVERY == 1:
             q, emb = self.pipe.embed(frame, face)
@@ -463,6 +477,8 @@ class Verifier:
         if status is Status.BASELINE:
             msg = hint or "Look straight at the camera and hold still"
             cue = "too_dark" if hint == "Move to where there is more light" else "hold_still"
+        elif ch.current is Action.BLINK and ch.step_elapsed(now) > SUNGLASSES_HINT_AFTER:
+            msg, cue = SUNGLASSES_PROMPT, "remove_sunglasses"
         elif ch.current:
             msg = PROMPTS[ch.current]
             cue = ch.current.value
@@ -487,6 +503,31 @@ class Verifier:
             mat = np.vstack(mats) if mats else np.zeros((0, 128), np.float32)
             self._gallery_cache = (r, mat, owners)
         return self._gallery_cache[1], self._gallery_cache[2]
+
+    @staticmethod
+    def _scores(s: Session) -> dict[str, Any]:
+        """What the check measured so far. Recorded with every result, also an early failure:
+        those are the scores an admin needs to set the match threshold."""
+        out: dict[str, Any] = dict(s.scores)
+        if s.matches:
+            out.setdefault("match", round(max(s.matches), 4))
+        if s.spoof:
+            out.setdefault("liveness", round(statistics.fmean(s.spoof), 4))
+            out.setdefault("spoof_low_frac", round(sum(x < 0.3 for x in s.spoof) / len(s.spoof), 3))
+        if s.frames:
+            out.setdefault("frames", s.frames)
+        if s.challenge:
+            out.setdefault("actions", ",".join(a.value for a in s.challenge.actions))
+        return out
+
+    def _probe_b64(self) -> str | None:
+        """The best-matching face of a verified check, for the server to learn a changing look
+        from (only when the space allows it; the server decides whether to keep it)."""
+        s = self.session
+        if not (s and s.embeddings and self._space("auto_update_faces", False)):
+            return None
+        best = s.embeddings[int(np.argmax(s.matches))]
+        return base64.b64encode(np.asarray(best, "<f4").tobytes()).decode()
 
     def _decide(self, now: float) -> None:
         s = self.session
@@ -551,7 +592,7 @@ class Verifier:
             min_gap_minutes=int(self._space("min_rescan_minutes", 2)))
 
     def _record(self, status: str, reason: str, now: float, scores: dict | None = None,
-                note: str = "", snapshot: str | None = None) -> None:
+                note: str = "", snapshot: str | None = None, embedding: str | None = None) -> None:
         s = self.session
         member = s.member if s else None
         evt = {"id": str(uuid.uuid4()), "occurred_at": self._event_time(now).isoformat(),
@@ -561,6 +602,8 @@ class Verifier:
                           **({} if self.clock_verified() else {"clock_unverified": True})}}
         if snapshot:
             evt["snapshot_jpeg_b64"] = snapshot
+        if embedding:
+            evt["embedding_b64"] = embedding
         self.store.enqueue(evt)
 
     def _snapshot(self) -> str | None:
@@ -580,10 +623,10 @@ class Verifier:
     def _finish(self, ok: bool, reason: str, now: float) -> None:
         s = self.session
         member = s.member if s else None
-        scores = s.scores if s else {}
+        scores = self._scores(s) if s else {}
         if ok and member:
             label, counts = self._label(member, now)
-            self._record("accepted", reason, now, scores)
+            self._record("accepted", reason, now, scores, embedding=self._probe_b64())
             tz = ZoneInfo(self._space("timezone", "UTC"))
             # The time recorded for the event: server-corrected, in the space's time zone.
             fmt = self._space("time_format", "24h")
@@ -611,8 +654,8 @@ class Verifier:
                 q.clear()
         can_review = bool(member) and key not in ("qr_invalid", "qr_unknown_person",
                                                   "qr_revoked", "member_inactive")
-        self._show_result(False, member, FAIL_MESSAGES.get(key, "Verification failed."), now,
-                          can_review=can_review, reason=reason)
+        message = FAIL_MESSAGES.get(reason) or FAIL_MESSAGES.get(key, "Verification failed.")
+        self._show_result(False, member, message, now, can_review=can_review, reason=reason)
 
     def _show_result(self, ok: bool, member: Member | None, message: str, now: float,
                      can_review: bool = False, time_str: str = "", reason: str = "") -> None:
@@ -636,7 +679,7 @@ class Verifier:
         if not self.result or not self.result["can_review"] or self.result["review_sent"]:
             return
         self._record("pending", f"review_requested:{self.result['reason']}", now,
-                     self.session.scores if self.session else {}, note="Requested at kiosk",
+                     self._scores(self.session) if self.session else {}, note="Requested at kiosk",
                      snapshot=self._snapshot())
         self.result["review_sent"] = True
         self.result_until = now + RESULT_OK_SECONDS

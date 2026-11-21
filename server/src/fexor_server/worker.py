@@ -16,6 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -46,6 +47,27 @@ async def handle_recompute(db: AsyncSession, payload: dict) -> None:
                               date.fromisoformat(payload["end"]))
 
 
+# One client for all deliveries: connections (and TLS sessions) to a receiver are reused.
+_http: httpx.AsyncClient | None = None
+
+
+def http() -> httpx.AsyncClient:
+    global _http
+    if _http is None or _http.is_closed:
+        # No redirects: a receiver must not bounce the signed payload to another address.
+        # No cookies: a shared client would otherwise replay a receiver's cookies to it.
+        _http = httpx.AsyncClient(timeout=10, follow_redirects=False,
+                                  cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=[])))
+    return _http
+
+
+async def close_http() -> None:
+    global _http
+    if _http is not None:
+        client, _http = _http, None
+        await client.aclose()
+
+
 async def handle_webhook(db: AsyncSession, payload: dict) -> None:
     hook = await db.get(Webhook, uuid.UUID(payload["webhook_id"]))
     if not hook or not hook.active:
@@ -57,10 +79,9 @@ async def handle_webhook(db: AsyncSession, payload: dict) -> None:
                       separators=(",", ":"))
     ts = str(int(time.time()))
     sig = hmac.new(secret, f"{ts}.{body}".encode(), hashlib.sha256).hexdigest()
-    async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
-        r = await client.post(hook.url, content=body, headers={
-            "Content-Type": "application/json", "User-Agent": "Fexor-Webhook/1",
-            "X-Fexor-Signature": f"t={ts},v1={sig}"})
+    r = await http().post(hook.url, content=body, headers={
+        "Content-Type": "application/json", "User-Agent": "Fexor-Webhook/1",
+        "X-Fexor-Signature": f"t={ts},v1={sig}"})
     if r.status_code >= 300:
         raise RuntimeError(f"webhook responded {r.status_code}")
 
@@ -144,6 +165,9 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     log.info("worker started")
     state = WorkerState()
-    while True:
-        await tick(state)
-        await asyncio.sleep(2)
+    try:
+        while True:
+            await tick(state)
+            await asyncio.sleep(2)
+    finally:
+        await close_http()

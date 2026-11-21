@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import math
 import os
 import platform
 import time
@@ -133,6 +134,16 @@ async def change_server(store: Store, server_url: str) -> str:
     return url
 
 
+def json_safe(event: dict[str, Any]) -> dict[str, Any]:
+    """JSON has no NaN or infinity (httpx refuses them): such a score becomes null instead of
+    stopping every upload after it."""
+    scores = event.get("scores")
+    if not isinstance(scores, dict):
+        return event
+    return {**event, "scores": {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
+                                for k, v in scores.items()}}
+
+
 def _unreachable(url: str, e: Exception) -> str:
     if isinstance(e, httpx.TimeoutException):
         why = "it did not answer in time"
@@ -165,6 +176,31 @@ class Syncer:
         # this start (a Raspberry Pi has no clock battery: after a power cut its time is wrong).
         self.clock_verified = False
         self._wake = asyncio.Event()
+        # Kept between syncs: one TLS handshake per connection, not one every 15 s.
+        self._client: httpx.AsyncClient | None = None
+        self._client_for: tuple | None = None
+
+    async def _http(self) -> httpx.AsyncClient:
+        """The connection for the current server address and token (a new one if either
+        changed, e.g. new address in the settings or paired again)."""
+        token = self.store.get("token", sealed=True)
+        url = self.store.get("server_url")
+        # The loop too: an httpx client only works on the event loop it was used on.
+        key = (url, token, _verify(), asyncio.get_running_loop())
+        if self._client is None or self._client.is_closed or key != self._client_for:
+            await self.close()
+            self._client = httpx.AsyncClient(base_url=url, timeout=20, verify=key[2],
+                                             headers={"Authorization": f"Bearer {token}"})
+            self._client_for = key
+        return self._client
+
+    async def close(self) -> None:
+        client, self._client, self._client_for = self._client, None, None
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:  # noqa: BLE001 - e.g. made on a loop that is gone; nothing to keep
+                log.debug("closing the sync connection failed", exc_info=True)
 
     def poke(self) -> None:
         """Sync soon (e.g. after an event was recorded)."""
@@ -183,49 +219,50 @@ class Syncer:
             return 300.0 if code == 401 else 60.0
         except Exception as e:  # noqa: BLE001 - offline is normal, keep retrying
             self.status = {**self.status, "online": False, "error": type(e).__name__}
+            await self.close()  # start the next try on fresh connections (network may have changed)
             return 30.0
 
     async def run(self) -> None:
         backoff = self.interval
-        while True:
-            if self.store.has("token"):
-                wait = await self.sync_now()
-                backoff = self.interval if wait == self.interval else min(max(backoff * 2, wait), 300)
-            try:
-                await asyncio.wait_for(self._wake.wait(), timeout=backoff)
-            except TimeoutError:
-                pass
-            self._wake.clear()
+        try:
+            while True:
+                if self.store.has("token"):
+                    wait = await self.sync_now()
+                    backoff = (self.interval if wait == self.interval
+                               else min(max(backoff * 2, wait), 300))
+                try:
+                    await asyncio.wait_for(self._wake.wait(), timeout=backoff)
+                except TimeoutError:
+                    pass
+                self._wake.clear()
+        finally:
+            await self.close()
 
     async def once(self) -> None:
-        token = self.store.get("token", sealed=True)
-        url = self.store.get("server_url")
-        headers = {"Authorization": f"Bearer {token}"}
-        async with httpx.AsyncClient(base_url=url, timeout=20, headers=headers,
-                                     verify=_verify()) as c:
-            t0 = time.time()
-            r = await c.post("/api/device/heartbeat",
-                             json={"info": device_info(self.store, self.extra_info())})
-            t1 = time.time()
+        c = await self._http()
+        t0 = time.time()
+        r = await c.post("/api/device/heartbeat",
+                         json={"info": device_info(self.store, self.extra_info())})
+        t1 = time.time()
+        r.raise_for_status()
+        server = datetime.fromisoformat(r.json()["server_time"]).timestamp()
+        self.store.set("clock_offset", f"{server - (t0 + t1) / 2:.3f}")
+        self.clock_verified = True
+
+        # Roster first: revoked cards and new people must arrive even if uploads have trouble.
+        etag = self.store.get("etag") if self.store.roster else None
+        r = await c.get("/api/device/sync", headers={"If-None-Match": etag} if etag else {})
+        if r.status_code != 304:
             r.raise_for_status()
-            server = datetime.fromisoformat(r.json()["server_time"]).timestamp()
-            self.store.set("clock_offset", f"{server - (t0 + t1) / 2:.3f}")
-            self.clock_verified = True
+            # Decrypting and parsing a big roster takes seconds on a Pi: not on the event loop.
+            await asyncio.to_thread(self.store.save_roster, r.json(), r.headers.get("etag"))
+            log.info("roster updated: %d members", len(self.store.roster.by_person))
 
-            # Roster first: revoked cards and new people must arrive even if uploads have trouble.
-            etag = self.store.get("etag") if self.store.roster else None
-            r = await c.get("/api/device/sync", headers={"If-None-Match": etag} if etag else {})
-            if r.status_code != 304:
-                r.raise_for_status()
-                # Decrypting and parsing a big roster takes seconds on a Pi: not on the event loop.
-                await asyncio.to_thread(self.store.save_roster, r.json(), r.headers.get("etag"))
-                log.info("roster updated: %d members", len(self.store.roster.by_person))
-
-            await self._upload(c)
-            await asyncio.to_thread(self.store.drop_old_snapshots)
+        await self._upload(c)
+        await asyncio.to_thread(self.store.drop_old_snapshots)
 
     async def _upload(self, c: httpx.AsyncClient) -> None:
-        while batch := self.store.pending(100):
+        while batch := [json_safe(e) for e in self.store.pending(100)]:
             r = await c.post("/api/device/events", json={"events": batch})
             if 400 <= r.status_code < 500 and r.status_code not in (401, 429):
                 # Something in this batch is refused (e.g. after a version change). Send one by

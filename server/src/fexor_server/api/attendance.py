@@ -3,13 +3,15 @@
 import asyncio
 import csv
 import io
+import math
+import statistics
 import uuid
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from fexor_core import crypto
 from fexor_core.schedule import clock_text
@@ -374,6 +376,69 @@ def _number(v: object) -> float:
     except (TypeError, ValueError):
         return 0.0
     return f if f == f and abs(f) != float("inf") else 0.0
+
+
+# ---------- face match threshold ----------
+# A suggestion needs this many samples of each kind; fewer say little about rare mistakes.
+MIN_GENUINE, MIN_IMPOSTOR = 20, 30
+SUGGEST_MARGIN = 0.03  # above the closest other person ever seen
+SUGGEST_RANGE = (0.36, 0.60)  # what the Settings slider offers; 0.363 is OpenCV's SFace value
+# The kiosk's other_best when nobody else in the space has a face photo: not a score.
+NO_OTHER_PERSON = -1.0
+
+
+def _spread(xs: list[float]) -> dict:
+    if not xs:
+        return {"count": 0}
+    q = statistics.quantiles(xs, n=20, method="inclusive") if len(xs) > 1 else [xs[0]] * 19
+    return {"count": len(xs), "min": round(min(xs), 4), "p5": round(q[0], 4),
+            "median": round(statistics.median(xs), 4), "p95": round(q[18], 4),
+            "max": round(max(xs), 4)}
+
+
+@router.get("/spaces/{space_id}/face-scores")
+async def face_scores(days: int = Query(90, ge=1, le=MAX_RANGE_DAYS),
+                      space: Space = Depends(require_space(Role.MANAGER)),
+                      db: AsyncSession = Depends(get_db)):
+    """Face match scores from kiosk checks, to set the match threshold from real use.
+
+    genuine: the right person's score (verified check-ins, and checks an admin approved after a
+    review request). impostor: the closest *other* person in the space, measured on every check
+    that got that far. Only event scores are read: no face template or photo.
+    """
+    rows = (await db.execute(
+        select(AttendanceEvent.status, AttendanceEvent.reason,
+               AttendanceEvent.scores["match"], AttendanceEvent.scores["other_best"])
+        .where(AttendanceEvent.space_id == space.id, AttendanceEvent.source == "kiosk",
+               AttendanceEvent.occurred_at >= now() - timedelta(days=days)))).all()
+
+    def num(v: object) -> float | None:  # scores come from kiosks: anything odd is skipped
+        return float(v) if isinstance(v, int | float) and math.isfinite(v) else None
+
+    th = space.match_threshold
+    genuine, impostor, false_rejects, unconfirmed = [], [], 0, 0
+    for status, reason, match, other in rows:
+        match, other = num(match), num(other)
+        reviewed = reason.startswith("review_requested:")
+        if other is not None and other > NO_OTHER_PERSON + 1e-6:
+            impostor.append(other)
+        if status == EventStatus.ACCEPTED and match is not None and (reason == "verified" or reviewed):
+            genuine.append(match)
+            false_rejects += reviewed and match < th
+        elif status == EventStatus.REJECTED and reason.startswith(("face_mismatch", "face_matches_other")):
+            unconfirmed += 1
+    suggested = None
+    if len(genuine) >= MIN_GENUINE and len(impostor) >= MIN_IMPOSTOR:
+        lo, hi = SUGGEST_RANGE
+        suggested = min(hi, max(lo, math.ceil((max(impostor) + SUGGEST_MARGIN) * 100 - 1e-9) / 100))
+    return {
+        "days": days, "threshold": th, "genuine": _spread(genuine), "impostor": _spread(impostor),
+        "confirmed_false_rejects": false_rejects, "unconfirmed_mismatches": unconfirmed,
+        "genuine_below_current": sum(g < th for g in genuine),
+        "suggested_threshold": suggested,
+        "genuine_below_suggested": None if suggested is None else sum(g < suggested for g in genuine),
+        "min_samples": {"genuine": MIN_GENUINE, "impostor": MIN_IMPOSTOR},
+    }
 
 
 # ---------- reports ----------

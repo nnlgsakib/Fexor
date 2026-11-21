@@ -22,6 +22,7 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -145,6 +146,9 @@ class Space(Base):
     challenge_actions: Mapped[int] = mapped_column(Integer, default=2)
     store_failure_snapshots: Mapped[bool] = mapped_column(Boolean, default=False)
     keep_enrollment_photos: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Kiosks send the face of a confident, live check-in; the server may keep it as an extra
+    # template (services.learn_face), like a phone adapting to a beard or new glasses.
+    auto_update_faces: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = _now()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -196,6 +200,8 @@ class FaceTemplate(Base):
         ForeignKey("person.id", ondelete="CASCADE"), index=True
     )
     model_id: Mapped[str] = mapped_column(String(40))
+    # "enrolled": from a photo an admin added. "auto": learned at a kiosk (no photo kept).
+    source: Mapped[str] = mapped_column(String(10), default="enrolled")
     embedding: Mapped[bytes] = mapped_column(LargeBinary)  # sealed, aad=person id
     photo: Mapped[bytes | None] = mapped_column(LargeBinary)  # sealed JPEG
     quality: Mapped[dict[str, Any]] = mapped_column(default=dict)
@@ -299,6 +305,10 @@ class AttendanceEvent(Base):
     __table_args__ = (
         Index("ix_event_space_time", "space_id", "occurred_at"),
         Index("ix_event_member_time", "membership_id", "occurred_at"),
+        # Review queue and pending count: only the (few) pending events.
+        Index("ix_event_pending", "space_id", "occurred_at",
+              postgresql_where=text("status = 'pending'")),
+        Index("ix_event_space_received", "space_id", "received_at"),  # dashboard "recent"
     )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)  # idempotency
     space_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("space.id", ondelete="CASCADE"))

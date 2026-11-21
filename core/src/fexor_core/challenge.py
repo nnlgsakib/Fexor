@@ -79,6 +79,10 @@ class Challenge:
             return self.actions[self.step]
         return None
 
+    def step_elapsed(self, now: float) -> float:
+        """Seconds the current action has been asked for (0 outside the actions)."""
+        return now - self._step_started if self.status is Status.ACTIVE else 0.0
+
     def _fail(self, reason: str) -> Status:
         self.status, self.reason = Status.FAILED, reason
         return self.status

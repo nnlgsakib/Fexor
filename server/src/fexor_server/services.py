@@ -2,25 +2,32 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import math
 import secrets
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import numpy as np
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fexor_core import crypto, qr
+from fexor_core.face import EMBEDDING_DIM, MODEL_ID
 from fexor_core.schedule import shift_id_on, window_issue
-from sqlalchemy import and_, delete, select
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from .config import get_settings
 from .models import (
     AttendanceDay,
     AttendanceEvent,
     EventStatus,
+    FaceTemplate,
     Holiday,
     Job,
     Leave,
@@ -33,7 +40,7 @@ from .models import (
     Space,
 )
 from .rules import ShiftSpec, compute_day, shift_day_for
-from .security import now
+from .security import audit, now
 
 
 # ---------- QR signing ----------
@@ -56,6 +63,12 @@ async def active_signing_key(db: AsyncSession) -> tuple[str, Ed25519PrivateKey]:
         return key.id, priv
     raw = crypto.unseal(get_settings().key, key.private_sealed, b"qr-signing")
     return key.id, Ed25519PrivateKey.from_private_bytes(raw)
+
+
+async def ensure_signing_key(db: AsyncSession) -> None:
+    """An active key exists afterwards. Cheap when it already does: nothing is decrypted."""
+    if (await db.execute(select(SigningKey.id).where(SigningKey.active).limit(1))).first() is None:
+        await active_signing_key(db)
 
 
 async def public_keys(db: AsyncSession) -> dict[str, str]:
@@ -118,8 +131,12 @@ def to_spec(s: Shift) -> ShiftSpec:
 class ScheduleContext:
     """Everything needed to evaluate days for a set of memberships in one space."""
 
-    def __init__(self, space: Space, shifts: dict, assignments: dict, holidays: set, leaves: dict):
+    def __init__(self, space: Space, shifts: dict, assignments: dict, holidays: set, leaves: dict,
+                 membership_ids: frozenset[uuid.UUID] = frozenset(),
+                 span: tuple[date, date] | None = None):
         self.space = space
+        self.membership_ids = membership_ids  # what was loaded: see covers()
+        self.span = span
         self.tz = ZoneInfo(space.timezone)
         self.shifts: dict[uuid.UUID, ShiftSpec] = shifts
         self.assignments: dict[uuid.UUID, list[tuple[date, uuid.UUID]]] = assignments
@@ -133,6 +150,20 @@ class ScheduleContext:
 
     def on_leave(self, membership_id: uuid.UUID, d: date) -> bool:
         return any(a <= d <= b for a, b in self.leaves.get(membership_id, []))
+
+    def covers(self, space: Space, membership_ids: list[uuid.UUID], start: date, end: date) -> bool:
+        """Loaded for these people and days, so it can be reused instead of loading again."""
+        return (self.space.id == space.id and self.span is not None
+                and self.span[0] <= start and end <= self.span[1]
+                and self.membership_ids.issuperset(membership_ids))
+
+    @classmethod
+    async def reuse_or_load(cls, db: AsyncSession, space: Space, membership_ids: list[uuid.UUID],
+                            start: date, end: date,
+                            reuse: ScheduleContext | None = None) -> ScheduleContext:
+        if reuse is not None and reuse.covers(space, membership_ids, start, end):
+            return reuse
+        return await cls.load(db, space, membership_ids, start, end)
 
     @classmethod
     async def load(cls, db: AsyncSession, space: Space, membership_ids: list[uuid.UUID],
@@ -164,19 +195,22 @@ class ScheduleContext:
             )
         )).scalars():
             leaves[lv.membership_id].append((lv.start_date, lv.end_date))
-        return cls(space, shifts, assignments, holidays, leaves)
+        return cls(space, shifts, assignments, holidays, leaves,
+                   membership_ids=frozenset(membership_ids), span=(start, end))
 
 
 async def recompute(
     db: AsyncSession, space: Space, membership_ids: list[uuid.UUID], start: date, end: date,
-    at: datetime | None = None,
+    at: datetime | None = None, ctx: ScheduleContext | None = None,
 ) -> int:
-    """Rebuild attendance_day rows for the given people and date range (inclusive)."""
+    """Rebuild attendance_day rows for the given people and date range (inclusive).
+    ctx: a schedule already loaded in this request, used if it covers these people and days."""
     if not membership_ids or start > end:
         return 0
     at = at or now()
-    ctx = await ScheduleContext.load(db, space, membership_ids, start - timedelta(days=1),
-                                     end + timedelta(days=1))
+    ctx = await ScheduleContext.reuse_or_load(db, space, membership_ids,
+                                              start - timedelta(days=1), end + timedelta(days=1),
+                                              reuse=ctx)
     members = {
         m.id: m for m in (await db.execute(
             select(Membership).where(Membership.id.in_(membership_ids))
@@ -222,6 +256,7 @@ async def recompute(
             ))
         d += timedelta(days=1)
 
+    # Chunks keep each statement well under Postgres' 32767 bind-parameter limit.
     for i in range(0, len(rows), 1000):
         chunk = rows[i:i + 1000]
         stmt = insert(AttendanceDay).values(chunk)
@@ -229,9 +264,10 @@ async def recompute(
             index_elements=["membership_id", "day"],
             set_={c: stmt.excluded[c] for c in chunk[0] if c not in ("membership_id", "day")},
         ))
-    for mid, dd in stale:
+    # Every day off of every member is stale: one statement per chunk, not one per person-day.
+    for i in range(0, len(stale), 5000):
         await db.execute(delete(AttendanceDay).where(
-            and_(AttendanceDay.membership_id == mid, AttendanceDay.day == dd)
+            tuple_(AttendanceDay.membership_id, AttendanceDay.day).in_(stale[i:i + 5000])
         ))
     return len(rows)
 
@@ -244,15 +280,15 @@ WINDOW_REASONS = {"checkin_not_open": EventStatus.REJECTED,
 
 
 async def window_issues(db: AsyncSession, space: Space, scans: list[tuple[uuid.UUID, datetime]],
-                        ) -> list[str | None]:
+                        ctx: ScheduleContext | None = None) -> list[str | None]:
     """For each (member, time) scan, in order: the WINDOW_REASONS key it breaks, or None.
     Scans that pass count for the ones after them (the check-in makes the next a check-out)."""
     if not scans:
         return []
     mids = list({m for m, _ in scans})
     start, end = event_dates(space, [t for _, t in scans])
-    ctx = await ScheduleContext.load(db, space, mids, start - timedelta(days=1),
-                                     end + timedelta(days=1))
+    ctx = await ScheduleContext.reuse_or_load(db, space, mids, start - timedelta(days=1),
+                                              end + timedelta(days=1), reuse=ctx)
     if all(s.checkin_close_minutes is None and s.checkout_open_minutes is None
            for s in ctx.shifts.values()):
         return [None] * len(scans)
@@ -351,3 +387,91 @@ def queue_recompute(db: AsyncSession, space: Space, start: date | None = None,
     if start <= end:
         enqueue(db, "recompute_space", {"space_id": str(space.id), "start": start.isoformat(),
                                          "end": end.isoformat()})
+
+
+# ---------- learning faces at the kiosk ----------
+# Like a phone adapting to a beard or new glasses: a kiosk sends the face of a verified check-in,
+# and it becomes an extra template only when the check was clearly the right, live person.
+# Each limit closes one way to abuse it.
+AUTO_FACES_MAX = 3  # learned templates kept per person; the oldest is replaced
+AUTO_FACE_EVERY = timedelta(days=7)  # at most one new one per person in this time
+AUTO_MATCH_MARGIN = 0.05  # must match the admin's photos (never a learned one) by threshold + this
+AUTO_OTHER_GAP = 0.10  # and look clearly more like them than like anyone else in the space
+AUTO_LIVENESS_MARGIN = 0.15  # photo/screen check passed clearly (liveness threshold + this)
+AUTO_SPOOF_LOW_FRAC = 0.05  # at most this share of frames looked like a photo
+AUTO_NEW_BELOW = 0.80  # this close to a stored template already: it adds nothing
+
+
+def _finite(v: object) -> float | None:
+    return float(v) if isinstance(v, int | float) and math.isfinite(v) else None
+
+
+def parse_embedding(b64: str | None) -> np.ndarray | None:
+    """A face template sent by a kiosk, or None if it is not a sound unit vector."""
+    if not b64:
+        return None
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if len(raw) != EMBEDDING_DIM * 4:
+        return None
+    v = np.frombuffer(raw, "<f4")
+    norm = float(np.linalg.norm(v)) if np.all(np.isfinite(v)) else 0.0
+    if not 0.9 < norm < 1.1:  # kiosks send normalized embeddings
+        return None
+    return (v / norm).astype(np.float32)
+
+
+async def learn_face(db: AsyncSession, space: Space, membership_id: uuid.UUID, probe: np.ndarray,
+                     scores: dict, device_id: uuid.UUID) -> FaceTemplate | None:
+    """Keep the face of a verified kiosk check-in as an extra template, if every limit above
+    holds. Returns the new template, or None. The kiosk is recorded: disconnecting it removes
+    what it taught (forget_faces_from)."""
+    if not space.auto_update_faces:
+        return None
+    live, low = _finite(scores.get("liveness")), _finite(scores.get("spoof_low_frac"))
+    other = _finite(scores.get("other_best"))
+    if (live is None or live < min(0.95, space.liveness_threshold + AUTO_LIVENESS_MARGIN)
+            or low is None or low > AUTO_SPOOF_LOW_FRAC
+            or other is None  # the 1:N cross-check must have run
+            or not scores.get("actions")):  # and the movement check
+        return None
+    # Locked: two uploads at once must not both add a template for the same person.
+    m = await db.get(Membership, membership_id, with_for_update=True)
+    if m is None:
+        return None
+    rows = (await db.execute(select(FaceTemplate).options(defer(FaceTemplate.photo)).where(
+        FaceTemplate.person_id == m.person_id, FaceTemplate.model_id == MODEL_ID)
+        .order_by(FaceTemplate.created_at))).scalars().all()
+    learned = [t for t in rows if t.source == "auto"]
+    if learned and learned[-1].created_at > now() - AUTO_FACE_EVERY:
+        return None
+    key, aad = get_settings().key, str(m.person_id).encode()
+    vectors = {t.id: crypto.unseal_vector(key, t.embedding, aad) for t in rows}
+    anchors = [vectors[t.id] for t in rows if t.source != "auto"]
+    if not anchors:
+        return None
+    match = max(float(np.dot(probe, a)) for a in anchors)
+    if (match < space.match_threshold + AUTO_MATCH_MARGIN or match - other < AUTO_OTHER_GAP
+            or max(float(np.dot(probe, v)) for v in vectors.values()) >= AUTO_NEW_BELOW):
+        return None
+    while len(learned) >= AUTO_FACES_MAX:
+        await db.delete(learned.pop(0))
+    t = FaceTemplate(person_id=m.person_id, model_id=MODEL_ID, source="auto",
+                     embedding=crypto.seal_vector(key, probe, aad), photo=None,
+                     quality={"match": round(match, 3), "liveness": round(live, 3),
+                              "device": str(device_id)})
+    db.add(t)
+    await db.flush()
+    audit(db, None, "face.auto_added", space_id=space.id, target=t.id, member=membership_id,
+          match=round(match, 3))
+    return t
+
+
+async def forget_faces_from(db: AsyncSession, device_id: uuid.UUID) -> int:
+    """Remove the faces a kiosk taught. A stolen kiosk could send crafted face numbers; once it
+    is disconnected, nothing it taught keeps working."""
+    res = await db.execute(delete(FaceTemplate).where(
+        FaceTemplate.source == "auto", FaceTemplate.quality["device"].astext == str(device_id)))
+    return res.rowcount or 0

@@ -58,8 +58,9 @@ async def _enroll(db: AsyncSession, space: Space, m: Membership, filename: str,
     if res.error:
         q = res.quality.__dict__ if res.quality else None
         return {"file": filename, "ok": False, "error": res.error, "quality": q}
-    count = len((await db.execute(
-        select(FaceTemplate.id).where(FaceTemplate.person_id == m.person_id)
+    count = len((await db.execute(  # learned looks don't take an admin's photo slots
+        select(FaceTemplate.id).where(FaceTemplate.person_id == m.person_id,
+                                      FaceTemplate.source == "enrolled")
     )).all())
     if count >= MAX_TEMPLATES:
         return {"file": filename, "ok": False, "error": "too_many_photos"}
@@ -151,7 +152,7 @@ async def list_faces(member_id: uuid.UUID, space: Space = Depends(require_space(
     m = await _member(db, space, member_id)
     rows = (await db.execute(select(FaceTemplate).where(FaceTemplate.person_id == m.person_id)
                              .order_by(FaceTemplate.created_at))).scalars()
-    return [{"id": str(t.id), "model_id": t.model_id, "quality": t.quality,
+    return [{"id": str(t.id), "model_id": t.model_id, "quality": t.quality, "source": t.source,
              "has_photo": t.photo is not None, "created_at": t.created_at} for t in rows]
 
 

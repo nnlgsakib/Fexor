@@ -325,7 +325,7 @@ function Photos({ space, member, canManage, onChanged }: {
 }) {
   const qc = useQueryClient();
   const base = `/spaces/${space.id}/members/${member.id}/faces`;
-  const faces = useQuery({ queryKey: ["faces", member.id], queryFn: () => api<{ id: string; has_photo: boolean; created_at: string }[]>(base) });
+  const faces = useQuery({ queryKey: ["faces", member.id], queryFn: () => api<{ id: string; has_photo: boolean; source: "enrolled" | "auto"; created_at: string }[]>(base) });
   const [results, setResults] = useState<FaceResult[]>([]);
   const [rejected, setRejected] = useState("");
   const upload = useMutation({
@@ -368,7 +368,8 @@ function Photos({ space, member, canManage, onChanged }: {
   }
   return (
     <Stack>
-      <Text size="sm" c="dimmed">Use 2 or 3 clear, front-facing photos in normal light. Each photo is checked for quality before it is saved.</Text>
+      <Text size="sm" c="dimmed">Add 3 to 5 clear photos in normal light: facing the camera, turned slightly left and right, and with and without
+        glasses if they wear them. Each photo is checked for quality before it is saved.</Text>
       {canManage && (
         <Dropzone onDrop={(f) => { setRejected(""); upload.mutate(f); }} onReject={(r) => setRejected(rejectionText(r))}
           accept={["image/jpeg", "image/png", "image/webp"]} loading={upload.isPending} maxSize={15 * 1024 ** 2}>
@@ -382,7 +383,13 @@ function Photos({ space, member, canManage, onChanged }: {
           {faces.data?.map((f) => (
             <Paper key={f.id} withBorder p={4} pos="relative">
               {f.has_photo && canManage ? <Image src={url(`${base}/${f.id}/photo`)} radius="sm" h={140} fit="cover" alt="Enrolled face" />
-                : <Stack h={140} justify="center" align="center"><Text size="xs" c="dimmed">{f.has_photo ? "Photo on file" : "Photo not kept"}</Text></Stack>}
+                : (
+                  <Stack h={140} justify="center" align="center" gap={2}>
+                    {f.source === "auto"
+                      ? <><Text size="xs" fw={500}>Learned at the kiosk</Text><Text size="xs" c="dimmed">{fmtDate(f.created_at)}</Text></>
+                      : <Text size="xs" c="dimmed">{f.has_photo ? "Photo on file" : "Photo not kept"}</Text>}
+                  </Stack>
+                )}
               {canManage && (
                 <ActionIcon color="red" variant="filled" size="md" pos="absolute" top={8} right={8} aria-label="Delete photo" onClick={() => del(f.id)}>
                   <IconTrash size={16} />

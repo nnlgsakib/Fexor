@@ -27,6 +27,18 @@ from .verifier import SETTINGS_SECONDS, Pipeline, RealPipeline, Verifier
 
 STATIC = Path(__file__).parent / "static"
 log = logging.getLogger("fexor.kiosk")
+# The live view runs ~12 times a second. What it shows from the database (queue sizes, names,
+# server address) is read this often, not on every frame: those reads share the store lock
+# with the verifier. Changes made by another process (headless enroll) still show within it.
+STATUS_SECONDS = 1.0
+PREVIEW_WIDTH = 480
+
+
+def preview_jpeg(frame: np.ndarray) -> bytes | None:
+    """Small JPEG of a camera frame for the on-screen preview."""
+    small = cv2.resize(frame, (PREVIEW_WIDTH, int(PREVIEW_WIDTH * frame.shape[0] / frame.shape[1])))
+    ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    return jpg.tobytes() if ok else None
 
 
 def dev_mode() -> bool:
@@ -338,18 +350,29 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
                     if msg["cmd"] == "review":
                         syncer.poke()
 
+        def stored_status() -> dict:
+            return {"outbox": store.outbox_size(), "stuck": store.stuck_count(),
+                    "space": store.get("space_name"), "server": store.get("server_url"),
+                    "device": store.get("device_name")}
+
+        def next_frame(after: int) -> tuple[int, bytes | None]:
+            seq, frame = camera.latest(after, 0.5)
+            return seq, (preview_jpeg(frame) if frame is not None else None)
+
         rtask = asyncio.create_task(reader())
         last_view, seq = None, -1
+        stored, stored_at = {}, None
         try:
             while not rtask.done():
-                view = {**verifier.view, "online": syncer.status["online"],
-                        "outbox": store.outbox_size(), "camera_ok": camera.ok,
-                        "space": store.get("space_name"), "pair": dict(pair),
-                        "server": store.get("server_url"), "device": store.get("device_name"),
+                t = time.monotonic()
+                if stored_at is None or t - stored_at >= STATUS_SECONDS:
+                    stored, stored_at = await asyncio.to_thread(stored_status), t
+                view = {**verifier.view, **stored, "online": syncer.status["online"],
+                        "camera_ok": camera.ok, "pair": dict(pair),
                         "camera": str(camera.source), "server_change": {
                             k: server_change[k] for k in ("status", "message")},
                         "revoked": syncer.status.get("error") == "revoked",
-                        "stuck": store.stuck_count(), "has_pin": pin_record() is not None,
+                        "has_pin": pin_record() is not None,
                         "tz": (store.roster.space.get("timezone") if store.roster else None),
                         "h12": bool(store.roster
                                     and store.roster.space.get("time_format") == "12h")}
@@ -358,12 +381,9 @@ def create_app(store: Store, camera: Camera, model_dir: Path | None = None,
                     if view.get("state") == "result" and (last_view or {}).get("state") != "result":
                         syncer.poke()  # upload the new event promptly
                     last_view = view
-                seq, frame = await asyncio.to_thread(camera.latest, seq, 0.5)
-                if frame is not None:
-                    small = cv2.resize(frame, (480, int(480 * frame.shape[0] / frame.shape[1])))
-                    ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    if ok:
-                        await sock.send_bytes(jpg.tobytes())
+                seq, jpg = await asyncio.to_thread(next_frame, seq)
+                if jpg is not None:
+                    await sock.send_bytes(jpg)
                 await asyncio.sleep(0.08)
         except (WebSocketDisconnect, RuntimeError):
             pass

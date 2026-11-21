@@ -58,6 +58,7 @@ class SpaceBase(BaseModel):
     challenge_actions: int | None = Field(None, ge=0, le=4)
     store_failure_snapshots: bool | None = None
     keep_enrollment_photos: bool | None = None
+    auto_update_faces: bool | None = None
     time_format: Literal["24h", "12h"] | None = None
 
     @field_validator("timezone")
@@ -72,7 +73,7 @@ class SpaceBase(BaseModel):
 REQUIRED_SPACE_FIELDS = {"name", "timezone", "mode", "member_label", "field_schema",
                          "min_rescan_minutes", "match_threshold", "liveness_threshold",
                          "challenge_actions", "store_failure_snapshots", "keep_enrollment_photos",
-                         "time_format"}
+                         "time_format", "auto_update_faces"}
 # Changing these changes how days are counted; applied from today (past days are kept).
 RULE_FIELDS = {"timezone", "mode", "default_shift_id", "min_rescan_minutes"}
 
@@ -118,6 +119,7 @@ def space_out(s: Space, role: str | None = None) -> dict:
         "liveness_threshold": s.liveness_threshold, "challenge_actions": s.challenge_actions,
         "store_failure_snapshots": s.store_failure_snapshots,
         "keep_enrollment_photos": s.keep_enrollment_photos, "time_format": s.time_format,
+        "auto_update_faces": s.auto_update_faces,
         "created_at": s.created_at,
         "role": role,
     }

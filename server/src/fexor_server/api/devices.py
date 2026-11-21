@@ -2,6 +2,8 @@
 
 import base64
 import hashlib
+import logging
+import math
 import secrets
 import uuid
 from datetime import date, datetime, timedelta
@@ -16,7 +18,6 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import defer
 
 from ..config import get_settings
 from ..db import get_db
@@ -47,9 +48,14 @@ from ..security import (
 )
 from ..services import (
     WINDOW_REASONS,
+    ScheduleContext,
     active_signing_key,
     enqueue,
+    ensure_signing_key,
     event_dates,
+    forget_faces_from,
+    learn_face,
+    parse_embedding,
     public_keys,
     recompute,
     window_issues,
@@ -57,6 +63,7 @@ from ..services import (
 from .auth import _rate_limit
 
 router = APIRouter(prefix="/api", tags=["devices"])
+log = logging.getLogger("fexor.devices")
 ENROLL_TTL = timedelta(minutes=30)
 ONLINE_WINDOW = timedelta(minutes=3)
 # Kiosk events older than this mean a wrong clock (or a very long offline spell): an admin
@@ -156,7 +163,9 @@ async def revoke_device(device_id: uuid.UUID, request: Request, remove: bool = F
         await db.commit()
         return {"ok": True}
     d.revoked_at, d.token_hash, d.enroll_code_hash = now(), None, None
-    audit(db, p, "device.revoked", space_id=space.id, target=d.id, request=request)
+    forgotten = await forget_faces_from(db, d.id)
+    audit(db, p, "device.revoked", space_id=space.id, target=d.id, request=request,
+          learned_faces_removed=forgotten)
     await db.commit()
     return {"ok": True}
 
@@ -256,24 +265,34 @@ async def heartbeat(body: HeartbeatIn, d: Device = Depends(current_device),
 @router.get("/device/sync")
 async def sync(response: Response, if_none_match: str | None = Header(None),
                d: Device = Depends(current_device), db: AsyncSession = Depends(get_db)):
-    """Full roster of the device's space. ETag makes unchanged polls cheap."""
+    """Full roster of the device's space. ETag makes unchanged polls cheap.
+
+    Kiosks poll every 15 s, so the ETag is built from ids and timestamps only: the answer
+    "not modified" reads no face template and decrypts nothing.
+    """
     space = await db.get(Space, d.space_id)
     assert space
     members = (await db.execute(
-        select(Membership, Person).join(Person, Person.id == Membership.person_id)
+        select(Membership.id, Membership.person_id, Membership.external_id, Membership.title,
+               Membership.active, Membership.start_date, Membership.end_date,
+               Membership.updated_at, Person.full_name, Person.updated_at.label("person_updated"))
+        .join(Person, Person.id == Membership.person_id)
         .where(Membership.space_id == space.id)
     )).all()
-    person_ids = [p.id for _, p in members]
-    templates: dict[uuid.UUID, list[FaceTemplate]] = {}
-    for t in (await db.execute(select(FaceTemplate).options(defer(FaceTemplate.photo)).where(
-            FaceTemplate.person_id.in_(person_ids), FaceTemplate.model_id == MODEL_ID))).scalars():
-        templates.setdefault(t.person_id, []).append(t)
-    creds = {c.person_id: c for c in (await db.execute(
-        select(QrCredential).where(QrCredential.person_id.in_(person_ids),
-                                   QrCredential.revoked_at.is_(None))
+    # Subqueries, not IN (<every id>): one bind parameter per id breaks on very big spaces.
+    in_space = select(Membership.person_id).where(Membership.space_id == space.id)
+    tpl_where = (FaceTemplate.person_id.in_(in_space), FaceTemplate.model_id == MODEL_ID)
+    tpl_order = (FaceTemplate.person_id, FaceTemplate.created_at, FaceTemplate.id)
+    template_ids: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for tid, pid in (await db.execute(
+            select(FaceTemplate.id, FaceTemplate.person_id).where(*tpl_where).order_by(*tpl_order))):
+        template_ids.setdefault(pid, []).append(tid)
+    creds: dict[uuid.UUID, uuid.UUID] = dict((await db.execute(  # newest open card wins
+        select(QrCredential.person_id, QrCredential.id).where(
+            QrCredential.person_id.in_(in_space), QrCredential.revoked_at.is_(None))
         .order_by(QrCredential.issued_at)
-    )).scalars()}
-    await active_signing_key(db)  # exists before first sync, so later settings QRs verify
+    )).all())
+    await ensure_signing_key(db)  # exists before first sync, so later settings QRs verify
     keys = await public_keys(db)
     # Shifts, so the kiosk can tell people about check-in and check-out windows.
     shifts = [{
@@ -286,23 +305,25 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
     } for s in (await db.execute(select(Shift).where(Shift.space_id == space.id, Shift.active)
                                  .order_by(Shift.id))).scalars()]
     assigned: dict[uuid.UUID, list[list[str]]] = {}
-    for a in (await db.execute(
-        select(ShiftAssignment).where(ShiftAssignment.membership_id.in_([m.id for m, _ in members]))
+    for mid, valid_from, shift_id in (await db.execute(
+        select(ShiftAssignment.membership_id, ShiftAssignment.valid_from, ShiftAssignment.shift_id)
+        .where(ShiftAssignment.membership_id.in_(
+            select(Membership.id).where(Membership.space_id == space.id)))
         .order_by(ShiftAssignment.valid_from, ShiftAssignment.id)
-    )).scalars():
-        assigned.setdefault(a.membership_id, []).append([a.valid_from.isoformat(), str(a.shift_id)])
+    )):
+        assigned.setdefault(mid, []).append([valid_from.isoformat(), str(shift_id)])
 
     today = now().astimezone(ZoneInfo(space.timezone)).date()
-    active = {m.id: _member_active(m, today) for m, _ in members}
+    active = {m.id: _member_active(m, today) for m in members}
     h = hashlib.sha256()
     h.update(f"{space.updated_at}{sorted(keys.items())}{d.name}{d.unlock_pin}".encode())
     h.update(f"{space.default_shift_id}{shifts}{sorted((str(k), v) for k, v in assigned.items())}"
              .encode())
-    for m, p in sorted(members, key=lambda r: r[0].id):
-        c = creds.get(p.id)
+    for m in sorted(members, key=lambda r: r.id):
         # active[] changes with the date alone (an end date passing), so it is hashed too.
-        h.update(f"{m.id}{m.updated_at}{p.updated_at}{c.id if c else ''}{active[m.id]}".encode())
-        h.update("".join(sorted(str(t.id) for t in templates.get(p.id, []))).encode())
+        h.update(f"{m.id}{m.updated_at}{m.person_updated}{creds.get(m.person_id, '')}"
+                 f"{active[m.id]}".encode())
+        h.update("".join(sorted(str(t) for t in template_ids.get(m.person_id, []))).encode())
     etag = f'"{h.hexdigest()}"'
     await db.commit()  # persist last_seen
     if if_none_match == etag:
@@ -311,6 +332,12 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
         return None
 
     key = get_settings().key
+    templates: dict[uuid.UUID, list[str]] = {}
+    for pid, sealed in (await db.execute(
+            select(FaceTemplate.person_id, FaceTemplate.embedding).where(*tpl_where)
+            .order_by(*tpl_order))):
+        templates.setdefault(pid, []).append(
+            base64.b64encode(crypto.unseal(key, sealed, str(pid).encode())).decode())
     response.headers["ETag"] = etag
     return {
         "space": {
@@ -323,6 +350,7 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
             "store_failure_snapshots": space.store_failure_snapshots,
             "default_shift_id": str(space.default_shift_id) if space.default_shift_id else None,
             "time_format": space.time_format,
+            "auto_update_faces": space.auto_update_faces,
         },
         "shifts": shifts,
         "model_id": MODEL_ID,
@@ -330,17 +358,14 @@ async def sync(response: Response, if_none_match: str | None = Header(None),
         "device": {"id": str(d.id), "name": d.name, "unlock_pin": d.unlock_pin},
         "members": [
             {
-                "id": str(m.id), "person_id": str(p.id), "name": p.full_name,
+                "id": str(m.id), "person_id": str(m.person_id), "name": m.full_name,
                 "external_id": m.external_id, "title": m.title,
                 "active": active[m.id],
                 "shifts": assigned.get(m.id, []),
-                "credential_id": str(creds[p.id].id) if p.id in creds else None,
-                "templates": [
-                    base64.b64encode(crypto.unseal(key, t.embedding, str(p.id).encode())).decode()
-                    for t in templates.get(p.id, [])
-                ],
+                "credential_id": str(creds[m.person_id]) if m.person_id in creds else None,
+                "templates": templates.get(m.person_id, []),
             }
-            for m, p in members
+            for m in members
         ],
         "server_time": now().isoformat(),
     }
@@ -360,6 +385,22 @@ class EventIn(BaseModel):
     note: str = Field("", max_length=500)
     scores: dict[str, float | int | str | bool | None] = {}
     snapshot_jpeg_b64: str | None = Field(None, max_length=400_000)
+    # Face of a verified check-in, to learn a changing look from (services.learn_face). Never
+    # stored with the event.
+    embedding_b64: str | None = None
+
+    @field_validator("scores")
+    @classmethod
+    def _finite_scores(cls, v: dict) -> dict:
+        # Postgres JSON has no NaN or infinity: one such score failed the whole upload.
+        return {k: (None if isinstance(x, float) and not math.isfinite(x) else x)
+                for k, x in v.items()}
+
+    @field_validator("embedding_b64", mode="before")
+    @classmethod
+    def _embedding(cls, v: object) -> str | None:
+        # Damaged face numbers are dropped, never a reason to refuse (and so lose) a check-in.
+        return v if isinstance(v, str) and len(v) <= 1024 else None
 
     @field_validator("occurred_at")
     @classmethod
@@ -409,8 +450,16 @@ async def push_events(body: EventsIn, d: Device = Depends(current_device),
         AttendanceEvent.id.in_([r["id"] for r in rows])))).scalars()) if rows else set()
     scans = [r for r in rows if r["status"] == EventStatus.ACCEPTED and r["membership_id"]
              and r["id"] not in known]
+    # One schedule for the window check and the recompute below: the accepted events are a
+    # subset of these scans, so it covers both (recompute loads its own if it ever doesn't).
+    ctx = None
+    if scans:
+        lo, hi = event_dates(space, [r["occurred_at"] for r in scans])
+        ctx = await ScheduleContext.load(db, space, list({r["membership_id"] for r in scans}),
+                                         lo - timedelta(days=1), hi + timedelta(days=1))
     for r, issue in zip(scans, await window_issues(
-            db, space, [(r["membership_id"], r["occurred_at"]) for r in scans]), strict=True):
+            db, space, [(r["membership_id"], r["occurred_at"]) for r in scans], ctx=ctx),
+            strict=True):
         if issue:
             r["status"], r["reason"] = WINDOW_REASONS[issue], f"{issue};{r['reason']}"[:200]
     inserted: list[uuid.UUID] = []
@@ -423,10 +472,29 @@ async def push_events(body: EventsIn, d: Device = Depends(current_device),
     accepted = [r for r in new if r["status"] == EventStatus.ACCEPTED and r["membership_id"]]
     if accepted:
         start, end = event_dates(space, [r["occurred_at"] for r in accepted])
-        await recompute(db, space, list({r["membership_id"] for r in accepted}), start, end)
+        await recompute(db, space, list({r["membership_id"] for r in accepted}), start, end,
+                        ctx=ctx)
+    await _learn_faces(db, space, body.events, accepted)
     await notify_webhooks(db, space, new)
     await db.commit()
     return {"stored": [str(e.id) for e in body.events]}
+
+
+async def _learn_faces(db: AsyncSession, space: Space, sent: list[EventIn],
+                       accepted: list[dict]) -> None:
+    """New, verified check-ins (not held by a shift window) that came with a face."""
+    if not space.auto_update_faces:
+        return
+    faces = {e.id: e.embedding_b64 for e in sent if e.embedding_b64}
+    for r in accepted:
+        probe = parse_embedding(faces.get(r["id"])) if r["reason"] == "verified" else None
+        if probe is None:
+            continue
+        try:
+            async with db.begin_nested():  # a failure here must never lose the check-in
+                await learn_face(db, space, r["membership_id"], probe, r["scores"], r["device_id"])
+        except Exception:
+            log.exception("learning a face from event %s failed", r["id"])
 
 
 async def notify_webhooks(db: AsyncSession, space: Space, events: list[dict]) -> None:

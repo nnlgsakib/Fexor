@@ -86,7 +86,9 @@ release. Then open it, click **New session** and show the pairing QR from the ad
 
 ## How a check-in is verified
 
-All of it runs on the kiosk; camera frames never leave the device.
+All of it runs on the kiosk; camera frames never leave the device. (With *learn changing faces*
+on, a verified check-in also sends its face template, 128 numbers and no image, to the server:
+see step 6.)
 
 1. **QR card.** The token is `FX1.<payload>.<Ed25519 signature>`. The kiosk checks the signature
    with the server's public key, then checks that it is the person's *current* card (reissuing a
@@ -100,6 +102,18 @@ All of it runs on the kiosk; camera frames never leave the device.
 5. **Face match** (SFace) against that person's enrolled photos only, on several sharp,
    front-facing frames. Then a cross-check: if the face looks more like someone else in the
    space, it fails.
+6. **Learning a changing face** (Settings, on by default). Like a phone's face unlock, a clear,
+   live match is kept as an extra template, so a new beard or glasses keep working. The server
+   decides, and keeps it only if it matches the admin's own photos by a margin (never a learned
+   one), looks clearly unlike everyone else, and passed the photo and movement checks well. At most
+   one a week and three per person, without a photo. They show under each person's photos and can
+   be deleted; disconnecting a kiosk deletes what it taught.
+
+If the kiosk can't see a blink (dark sunglasses), it asks the person to take them off.
+
+**Setting the match strictness.** Settings shows the match scores of the last 90 days: the right
+person's, and the closest *other* person's on every check. Once there are enough, it suggests a
+value just above the closest other person ever seen, and how many honest checks fall below it.
 
 | Stage | Model | License | Speed (this dev PC) |
 |---|---|---|---|

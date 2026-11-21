@@ -38,8 +38,26 @@ export interface Space {
   challenge_actions: number;
   store_failure_snapshots: boolean;
   keep_enrollment_photos: boolean;
+  /** Kiosks learn a changing look (beard, new glasses) from confident, live check-ins. */
+  auto_update_faces: boolean;
   time_format: "24h" | "12h";
   role: Role;
+}
+
+export interface ScoreSpread { count: number; min?: number; p5?: number; median?: number; p95?: number; max?: number }
+
+/** GET /spaces/{id}/face-scores: face match scores from real kiosk checks. */
+export interface FaceScores {
+  days: number;
+  threshold: number;
+  genuine: ScoreSpread;
+  impostor: ScoreSpread;
+  confirmed_false_rejects: number;
+  unconfirmed_mismatches: number;
+  genuine_below_current: number;
+  suggested_threshold: number | null;
+  genuine_below_suggested: number | null;
+  min_samples: { genuine: number; impostor: number };
 }
 
 export interface Member {

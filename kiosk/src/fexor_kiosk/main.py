@@ -16,13 +16,15 @@ def data_dir(arg: str | None) -> Path:
 def bench(camera: str, seconds: float) -> None:
     """Per-stage latency on this machine, using live camera frames."""
     import statistics
+    from concurrent.futures import ThreadPoolExecutor
 
     from .camera import Camera
     from .verifier import RealPipeline
 
     pipe = RealPipeline()
     cam = Camera(camera).start()
-    stages: dict[str, list[float]] = {k: [] for k in ("detect", "spoof", "mesh", "embed", "qr")}
+    stages: dict[str, list[float]] = {k: [] for k in ("detect", "spoof", "mesh", "live", "embed", "qr")}
+    pool = ThreadPoolExecutor(1)  # as the verifier does it: spoof and mesh at the same time
     end, seq = time.time() + seconds, -1
     while time.time() < end:
         seq, frame = cam.latest(seq, 2.0)
@@ -41,13 +43,19 @@ def bench(camera: str, seconds: float) -> None:
             t = time.perf_counter()
             fn(frame, faces[0])
             stages[name].append(time.perf_counter() - t)
+        t = time.perf_counter()
+        spoof = pool.submit(pipe.spoof, frame, faces[0])
+        pipe.mesh(frame, faces[0])
+        spoof.result()
+        stages["live"].append(time.perf_counter() - t)
     cam.stop()
+    pool.shutdown()
     for k, v in stages.items():
         if v:
             print(f"{k:7s} n={len(v):4d}  median {statistics.median(v) * 1000:6.1f} ms  "
                   f"p95 {sorted(v)[int(len(v) * 0.95) - 1] * 1000:6.1f} ms")
-    if stages["mesh"]:
-        per_frame = sum(statistics.median(stages[k]) for k in ("detect", "spoof", "mesh"))
+    if stages["live"]:
+        per_frame = sum(statistics.median(stages[k]) for k in ("detect", "live"))
         per_frame += statistics.median(stages["embed"]) / 3
         print(f"~{1 / per_frame:.1f} verification frames/s")
 

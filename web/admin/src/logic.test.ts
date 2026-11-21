@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, detailText, OFFLINE, setCsrf, statusText } from "./api";
 import { changes } from "./pages/People";
 import { clockPlus } from "./pages/Schedule";
-import { fieldKey } from "./pages/Settings";
+import { fieldKey, thresholdAdvice } from "./pages/Settings";
 import { dateIn, fmtClock, fmtTime } from "./ui";
 
 function json(status: number, body: unknown) {
@@ -103,5 +103,41 @@ describe("time format", () => {
     expect(fmtClock("16:05", "24h")).toBe("16:05");
     expect(fmtTime("2026-11-10T16:05:00Z", "UTC", "12h")).toMatch(/^4:05\s?PM$/i);
     expect(fmtTime("2026-11-10T16:05:00Z", "UTC", "24h")).toBe("16:05");
+  });
+});
+
+describe("face match threshold advice", () => {
+  const base = {
+    days: 90, threshold: 0.42, confirmed_false_rejects: 0, unconfirmed_mismatches: 0,
+    genuine: { count: 0 }, impostor: { count: 0 }, genuine_below_current: 0,
+    suggested_threshold: null, genuine_below_suggested: null, min_samples: { genuine: 20, impostor: 30 },
+  };
+
+  it("waits for enough check-ins before suggesting", () => {
+    const a = thresholdAdvice({ ...base, genuine: { count: 5 }, impostor: { count: 4 } });
+    expect(a.suggested).toBeNull();
+    expect(a.text).toBe("Not enough kiosk checks yet to suggest a value: 5 of 20 face matches and 4 of 30 closest-other scores so far.");
+  });
+
+  it("suggests a more lenient value when honest people are turned away", () => {
+    const a = thresholdAdvice({ ...base, genuine: { count: 40 }, impostor: { count: 40, max: 0.3 },
+      suggested_threshold: 0.36, genuine_below_current: 3, genuine_below_suggested: 0, confirmed_false_rejects: 3 });
+    expect(a.suggested).toBe(0.36);
+    expect(a.color).toBe("yellow");
+    expect(a.text).toBe("3 honest face matches scored below the current 0.42 (3 confirmed by an admin's review). At 0.36 that would be 0. The closest other person scored 0.30.");
+  });
+
+  it("warns when someone else came close to the current value", () => {
+    const a = thresholdAdvice({ ...base, genuine: { count: 40 }, impostor: { count: 40, max: 0.45 },
+      suggested_threshold: 0.48, genuine_below_current: 0, genuine_below_suggested: 2 });
+    expect(a.color).toBe("red");
+    expect(a.text).toBe("Another person in this space scored 0.45, close to or above the current 0.42. A stricter 0.48 is safer; 2 honest face matches would have been below it.");
+  });
+
+  it("says when the current value fits", () => {
+    const a = thresholdAdvice({ ...base, genuine: { count: 40 }, impostor: { count: 40, max: 0.39 },
+      suggested_threshold: 0.42, genuine_below_current: 0, genuine_below_suggested: 0 });
+    expect(a.suggested).toBeNull();
+    expect(a.color).toBe("green");
   });
 });

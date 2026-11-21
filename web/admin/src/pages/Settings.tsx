@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../api";
 import { useMe } from "../auth";
-import type { FieldDef, Shift, Space } from "../types";
+import type { FaceScores, FieldDef, Shift, Space } from "../types";
 import { PageHeader, QueryState, notifyError, notifyOk, useSpace } from "../ui";
 import { timezones } from "./Spaces";
 
@@ -20,10 +20,35 @@ export function fieldKey(label: string, n: number) {
   return auto || `field_${n}`;
 }
 
+const n2 = (v: number) => v.toFixed(2);
+const matches = (n: number) => `${n} honest face match${n === 1 ? "" : "es"}`;
+
+/** What the kiosk scores say about the face match strictness, in plain words. `suggested` is
+ *  set only when changing the value would help. */
+export function thresholdAdvice(r: FaceScores): { color: string; text: string; suggested: number | null } {
+  const s = r.suggested_threshold;
+  if (s === null) {
+    return { color: "gray", suggested: null, text: `Not enough kiosk checks yet to suggest a value: ${r.genuine.count} of `
+      + `${r.min_samples.genuine} face matches and ${r.impostor.count} of ${r.min_samples.impostor} closest-other scores so far.` };
+  }
+  const closest = n2(r.impostor.max ?? 0);
+  if (s > r.threshold) {
+    return { color: "red", suggested: s, text: `Another person in this space scored ${closest}, close to or above the current `
+      + `${n2(r.threshold)}. A stricter ${n2(s)} is safer; ${matches(r.genuine_below_suggested ?? 0)} would have been below it.` };
+  }
+  if (s < r.threshold && r.genuine_below_current > (r.genuine_below_suggested ?? 0)) {
+    const confirmed = r.confirmed_false_rejects ? ` (${r.confirmed_false_rejects} confirmed by an admin's review)` : "";
+    return { color: "yellow", suggested: s, text: `${matches(r.genuine_below_current)} scored below the current ${n2(r.threshold)}`
+      + `${confirmed}. At ${n2(s)} that would be ${r.genuine_below_suggested}. The closest other person scored ${closest}.` };
+  }
+  return { color: "green", suggested: null, text: `The current ${n2(r.threshold)} fits: the closest other person scored ${closest}, `
+    + `and ${matches(r.genuine_below_current)} scored below it.` };
+}
+
 const RULES: (keyof Space)[] = ["timezone", "mode", "default_shift_id", "min_rescan_minutes"];
 
 export function Settings() {
-  const { spaceId, space, spaceQuery, isOwner, today } = useSpace();
+  const { spaceId, space, spaceQuery, isOwner, canManage, today } = useSpace();
   const { me, refresh } = useMe();
   const qc = useQueryClient();
   const nav = useNavigate();
@@ -126,7 +151,13 @@ export function Settings() {
               onChange={(e) => set("store_failure_snapshots", e.currentTarget.checked)} disabled={ro} />
             <Checkbox label="Keep enrollment photos" description="Needed to show photos here and to move to a newer face model later"
               checked={f.keep_enrollment_photos} onChange={(e) => set("keep_enrollment_photos", e.currentTarget.checked)} disabled={ro} />
+            <Checkbox label="Learn changing faces at the kiosk" checked={f.auto_update_faces} disabled={ro}
+              onChange={(e) => set("auto_update_faces", e.currentTarget.checked)}
+              description={"Like a phone's face unlock: after a clear, live match the kiosk keeps that face too, so a new beard or "
+                + "glasses keep working. Only the face numbers are kept, no photo. At most one a week and three per person; "
+                + "they appear under each person's photos and can be deleted there."} />
           </Stack>
+          {canManage && <MatchScores spaceId={spaceId} onUse={ro ? undefined : (v) => set("match_threshold", v)} />}
         </Paper>
 
         <Paper withBorder p="lg">
@@ -177,6 +208,36 @@ export function Settings() {
       <DeleteSpace opened={deleting} space={space!} onClose={() => setDeleting(false)}
         onDeleted={() => { qc.invalidateQueries({ queryKey: ["spaces"] }); refresh(); nav("/spaces"); }} />
     </>
+  );
+}
+
+function MatchScores({ spaceId, onUse }: { spaceId: string; onUse?: (v: number) => void }) {
+  const q = useQuery({ queryKey: ["face-scores", spaceId], queryFn: () => api<FaceScores>(`/spaces/${spaceId}/face-scores`) });
+  const r = q.data;
+  const a = r && thresholdAdvice(r);
+  return (
+    <Stack gap={6} mt="lg">
+      <Text size="sm" fw={500}>Face match scores from the last 90 days</Text>
+      <QueryState q={q}>
+        {r && a && (
+          <>
+            <Text size="sm" c="dimmed">
+              The right person: median {r.genuine.median !== undefined ? n2(r.genuine.median) : "–"} ({r.genuine.count} checks).
+              Closest other person: highest {r.impostor.max !== undefined ? n2(r.impostor.max) : "–"} ({r.impostor.count} checks).
+              {r.unconfirmed_mismatches > 0 && ` ${r.unconfirmed_mismatches} failed matches nobody reviewed yet.`}
+            </Text>
+            <Alert color={a.color} variant="light">
+              <Group justify="space-between" wrap="wrap" gap="sm">
+                <Text size="sm" style={{ flex: "1 1 320px" }}>{a.text}</Text>
+                {a.suggested !== null && onUse && (
+                  <Button size="xs" variant="default" onClick={() => onUse(a.suggested!)}>Use {n2(a.suggested)}</Button>
+                )}
+              </Group>
+            </Alert>
+          </>
+        )}
+      </QueryState>
+    </Stack>
   );
 }
 

@@ -83,10 +83,18 @@ class Store:
             CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v BLOB);
             CREATE TABLE IF NOT EXISTS outbox (
                 id TEXT PRIMARY KEY, payload TEXT NOT NULL, created REAL NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0);
+                attempts INTEGER NOT NULL DEFAULT 0, snap INTEGER NOT NULL DEFAULT 1);
             CREATE TABLE IF NOT EXISTS recent (member_id TEXT, ts REAL);
             CREATE INDEX IF NOT EXISTS recent_m ON recent(member_id, ts);
         """)
+        # snap: the sealed payload may still hold a face snapshot (so old ones can be stripped
+        # without decrypting the whole queue on every sync). Queues from before it: 1 = check.
+        if "snap" not in {r[1] for r in self._db.execute("PRAGMA table_info(outbox)")}:
+            try:
+                self._db.execute("ALTER TABLE outbox ADD COLUMN snap INTEGER NOT NULL DEFAULT 1")
+            except sqlite3.OperationalError as e:  # another process (headless enroll) won the race
+                if "duplicate column" not in str(e):
+                    raise
         self.roster: Roster | None = self._load_roster()
 
     def close(self) -> None:
@@ -148,8 +156,10 @@ class Store:
 
     def enqueue(self, event: dict[str, Any]) -> None:
         with self._lock:
-            self._db.execute("INSERT OR IGNORE INTO outbox (id, payload, created) VALUES (?,?,?)",
-                             (event["id"], self._seal_event(event), time.time()))
+            self._db.execute(
+                "INSERT OR IGNORE INTO outbox (id, payload, created, snap) VALUES (?,?,?,?)",
+                (event["id"], self._seal_event(event), time.time(),
+                 int(bool(event.get("snapshot_jpeg_b64")))))
 
     def pending(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
@@ -177,13 +187,15 @@ class Store:
         """Face snapshots are only for a prompt review; don't keep them on a kiosk for long."""
         cutoff = time.time() - self.SNAPSHOT_DAYS * 86400
         with self._lock:
-            rows = self._db.execute("SELECT id, payload FROM outbox WHERE created < ?",
+            rows = self._db.execute("SELECT id, payload FROM outbox WHERE created < ? AND snap = 1",
                                     (cutoff,)).fetchall()
             for eid, payload in rows:
                 event = self._open_event(payload)
                 if event.pop("snapshot_jpeg_b64", None) is not None:
-                    self._db.execute("UPDATE outbox SET payload=? WHERE id=?",
+                    self._db.execute("UPDATE outbox SET payload=?, snap=0 WHERE id=?",
                                      (self._seal_event(event), eid))
+                else:
+                    self._db.execute("UPDATE outbox SET snap=0 WHERE id=?", (eid,))
 
     def clear_outbox(self) -> None:
         with self._lock:

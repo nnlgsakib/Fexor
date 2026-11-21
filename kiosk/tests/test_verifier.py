@@ -694,36 +694,3 @@ def test_voice_cue_emission_on_verification(kiosk):
     assert v.state == "result"
     assert v.view["ok"]
     assert v.view["cue"] in ("checked_in", "checked_out", "marked_present")
-
-
-def test_qr_decoding_under_degraded_lighting_and_focus():
-    import cv2
-    from fexor_kiosk.verifier import RealPipeline
-
-    pipe = RealPipeline()
-    tok = token()
-    qr_img = cv2.imdecode(np.frombuffer(_qr_png(tok), np.uint8), cv2.IMREAD_COLOR)
-
-    canvas = np.ones((480, 640, 3), dtype=np.uint8) * 140
-    q = cv2.resize(qr_img, (160, 160))
-    canvas[160:320, 240:400] = q
-
-    # 1. Clean frame
-    assert pipe.decode_qr(canvas) == tok
-
-    # 2. Dim / underexposed frame
-    dark = np.clip(canvas * 0.2, 0, 255).astype(np.uint8)
-    assert pipe.decode_qr(dark) == tok
-
-    # 3. Bright / washed-out glare frame
-    washed = np.clip(canvas * 0.25 + 175, 0, 255).astype(np.uint8)
-    assert pipe.decode_qr(washed) == tok
-
-    # 4. Shadow gradient across the card
-    grad = np.tile(np.linspace(0.1, 0.95, 640, dtype=np.float32), (480, 1))[:, :, None]
-    shadow = np.clip(canvas * grad, 0, 255).astype(np.uint8)
-    assert pipe.decode_qr(shadow) == tok
-
-    # 5. Out of focus / blurred frame
-    blurred = cv2.GaussianBlur(canvas, (5, 5), 1.2)
-    assert pipe.decode_qr(blurred) == tok

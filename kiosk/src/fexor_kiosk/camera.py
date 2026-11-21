@@ -87,6 +87,16 @@ class Camera:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # Enable hardware autofocus, auto-exposure, and auto-white-balance when supported by the camera device
+        for prop, val in (
+            (cv2.CAP_PROP_AUTOFOCUS, 1),
+            (cv2.CAP_PROP_AUTO_EXPOSURE, 3),  # 3 = auto in V4L2 / DirectShow
+            (cv2.CAP_PROP_AUTO_WB_TEMPERATURE, 1),
+        ):
+            try:
+                cap.set(prop, val)
+            except Exception:  # noqa: S110 - hardware camera properties may not be supported by every driver
+                pass
         return cap
 
     def _run(self) -> None:

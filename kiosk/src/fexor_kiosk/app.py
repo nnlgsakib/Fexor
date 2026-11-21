@@ -41,8 +41,31 @@ def decode_qr_image(data: bytes) -> str | None:
     if scale < 1:
         img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     # Two readers: each misses some codes the other reads (see RealPipeline.decode_qr).
-    for reader in (cv2.QRCodeDetector(), cv2.QRCodeDetectorAruco()):
+    readers = (cv2.QRCodeDetector(), cv2.QRCodeDetectorAruco())
+    for reader in readers:
         text, _, _ = reader.detectAndDecode(img)
+        if text:
+            return text
+    # Apply lighting/contrast and focus compensation for degraded images
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    p_min, p_max = float(np.min(gray)), float(np.max(gray))
+    norm = None
+    if p_max - p_min > 15:
+        norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+        for reader in readers:
+            text, _, _ = reader.detectAndDecode(norm)
+            if text:
+                return text
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+    sharpened = cv2.filter2D(norm if norm is not None else gray, -1, kernel)
+    for reader in readers:
+        text, _, _ = reader.detectAndDecode(sharpened)
+        if text:
+            return text
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    equalized = clahe.apply(gray)
+    for reader in readers:
+        text, _, _ = reader.detectAndDecode(equalized)
         if text:
             return text
     return None

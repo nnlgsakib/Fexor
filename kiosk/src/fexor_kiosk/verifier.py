@@ -111,13 +111,63 @@ class RealPipeline:
         # The classic reader misses ~3% of clean codes (depends on the data); the Aruco-based one
         # reads those. Alternate per frame: both get a chance, each frame costs one decode.
         self._qr = [cv2.QRCodeDetector(), cv2.QRCodeDetectorAruco()]
-        self._qr_turn = 0
+        self._qr_sharp_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+        self._qr_clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
 
-    def decode_qr(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        self._qr_turn ^= 1
-        text, _, _ = self._qr[self._qr_turn].detectAndDecode(gray)
-        return text or None
+    def decode_qr(self, frame: np.ndarray) -> str | None:
+        """Decode QR with lighting and focus compensation (brightness/contrast auto-stretch,
+        focus sharpening, CLAHE illumination equalization, and center guide-box ROI zoom).
+        Applies only to QR code decoding; face verification receives the original frame."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
+
+        # 1. Direct raw check with both detectors
+        for r in self._qr:
+            text, _, _ = r.detectAndDecode(gray)
+            if text:
+                return text
+
+        # 2. Auto-contrast / brightness dynamic range stretch (for dark or overexposed frames)
+        p_min, p_max = float(np.min(gray)), float(np.max(gray))
+        norm = None
+        if p_max - p_min > 15:
+            norm = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+            for r in self._qr:
+                text, _, _ = r.detectAndDecode(norm)
+                if text:
+                    return text
+
+        # 3. Focus sharpening (simulated auto-focus for unsharp / blurred frames)
+        base_for_sharp = norm if norm is not None else gray
+        sharpened = cv2.filter2D(base_for_sharp, -1, self._qr_sharp_kernel)
+        for r in self._qr:
+            text, _, _ = r.detectAndDecode(sharpened)
+            if text:
+                return text
+
+        # 4. CLAHE (illumination normalization for uneven shadows and screen glare)
+        equalized = self._qr_clahe.apply(gray)
+        for r in self._qr:
+            text, _, _ = r.detectAndDecode(equalized)
+            if text:
+                return text
+
+        # 5. Center crop / zoom (matches the on-screen card guide reticle)
+        h, w = gray.shape[:2]
+        ch, cw = int(h * 0.7), int(w * 0.7)
+        cy, cx = (h - ch) // 2, (w - cw) // 2
+        crop = cv2.resize(gray[cy:cy+ch, cx:cx+cw], (w, h), interpolation=cv2.INTER_LINEAR)
+        for r in self._qr:
+            text, _, _ = r.detectAndDecode(crop)
+            if text:
+                return text
+        if p_max - p_min > 15:
+            crop_norm = cv2.normalize(crop, None, 0, 255, cv2.NORM_MINMAX)
+            for r in self._qr:
+                text, _, _ = r.detectAndDecode(crop_norm)
+                if text:
+                    return text
+
+        return None
 
     def detect(self, frame):
         return self._engine.detect(frame)

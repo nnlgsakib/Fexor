@@ -325,7 +325,8 @@ class Verifier:
                 self._on_qr(text, now)
             else:
                 self.view = {"state": "scan_qr", "message": "Hold your QR code up to the camera",
-                             "remaining": round(QR_TIMEOUT - (now - self.session.started))}
+                             "remaining": round(QR_TIMEOUT - (now - self.session.started)),
+                             "cue": "scan_qr"}
             return
         if self.state == "face":
             self._face_step(frame, now)
@@ -380,7 +381,8 @@ class Verifier:
         s.challenge = Challenge(random_actions(n))
         s.started = now  # face step gets its own full time budget, however long the QR took
         self.state = "face"
-        self.view = {"state": "face", "name": member.name, "message": "Look straight at the camera"}
+        self.view = {"state": "face", "name": member.name, "message": "Look straight at the camera",
+                     "cue": "look_straight"}
 
     def _on_settings_qr(self, text: str, now: float) -> None:
         assert self.roster is not None
@@ -416,16 +418,16 @@ class Verifier:
         base = {"state": "face", "name": s.member.name,
                 "remaining": round(SESSION_TIMEOUT - (now - s.started))}
         if not faces:
-            self.view = {**base, "message": "Look straight at the camera", "box": None}
+            self.view = {**base, "message": "Look straight at the camera", "box": None, "cue": "look_straight"}
             return
         face = faces[0]
         box_n = [face.box[0] / w, face.box[1] / h, face.box[2] / w, face.box[3] / h]
         if len(faces) > 1 and faces[1].box[2] * faces[1].box[3] > 0.25 * face.box[2] * face.box[3]:
             self.view = {**base, "message": "Only one person in front of the camera please",
-                         "box": box_n}
+                         "box": box_n, "cue": "one_person"}
             return
         if min(face.box[2], face.box[3]) < MIN_FACE_PX * (w / 640):
-            self.view = {**base, "message": "Come a little closer", "box": box_n}
+            self.view = {**base, "message": "Come a little closer", "box": box_n, "cue": "come_closer"}
             return
         if s.last_box is not None and iou(s.last_box, face.box) < 0.15:
             self._finish(False, "face_changed", now)
@@ -460,12 +462,16 @@ class Verifier:
 
         if status is Status.BASELINE:
             msg = hint or "Look straight at the camera and hold still"
+            cue = "too_dark" if hint == "Move to where there is more light" else "hold_still"
         elif ch.current:
             msg = PROMPTS[ch.current]
+            cue = ch.current.value
         else:
             msg = hint or "Hold still..."
+            cue = "too_dark" if hint == "Move to where there is more light" else "hold_still"
         self.view = {**base, "message": msg, "box": box_n,
                      "action": ch.current.value if ch.current else None,
+                     "cue": cue,
                      "step": min(ch.step + 1, len(ch.actions)), "steps": len(ch.actions)}
 
     def _gallery(self) -> tuple[np.ndarray, list[str]]:
@@ -614,10 +620,17 @@ class Verifier:
         self.result_until = now + (RESULT_OK_SECONDS if ok else RESULT_FAIL_SECONDS)
         self.result = {"ok": ok, "reason": reason, "review_sent": False,
                        "can_review": can_review}
+        cue = ("checked_in" if message == "Checked in"
+               else "checked_out" if message == "Checked out"
+               else "marked_present" if message == "Marked present"
+               else "already_recorded" if message == "Already recorded"
+               else "checked_in" if ok
+               else "failed")
         self.view = {"state": "result", "ok": ok, "message": message,
                      "name": member.name if member else None,
                      "external_id": member.external_id if member else None,
-                     "time": time_str, "can_review": can_review}
+                     "time": time_str, "can_review": can_review,
+                     "cue": cue}
 
     def _request_review(self, now: float) -> None:
         if not self.result or not self.result["can_review"] or self.result["review_sent"]:

@@ -680,3 +680,17 @@ def test_12_hour_times_on_the_result_card(tmp_path):
     v.roster.space["time_format"] = "12h"
     view = scan(v, pipe, 1_000_000.0)
     assert view["time"] == "1:46 PM" and "12:30 PM" in view["why"]
+
+
+def test_voice_cue_emission_on_verification(kiosk):
+    v, pipe, store = kiosk
+    tok = token()
+    start(v, pipe, tok)
+    assert v.state == "face"
+    assert v.view["cue"] == "look_straight"
+
+    # Run face check frames
+    run(v)
+    assert v.state == "result"
+    assert v.view["ok"]
+    assert v.view["cue"] in ("checked_in", "checked_out", "marked_present")

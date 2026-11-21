@@ -53,6 +53,7 @@
   .ghost { background: transparent; color: var(--on-ground); border: 1.5px solid var(--ground-line);
     border-radius: 12px; padding: 0 18px; min-height: 48px; font-size: 17px; font-weight: 600; }
   .ghost:active { background: var(--ground-deep); }
+  .ghost.sound-btn { padding: 0 14px; min-width: 48px; font-size: 20px; line-height: 1; }
 
   /* ---------- verify screen: camera slot | time clock ---------- */
   main { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, 1fr); gap: clamp(16px, 3vw, 48px);
@@ -94,6 +95,8 @@
 
   .msg { font-size: clamp(26px, 5vh, 46px); font-weight: 700; line-height: 1.12; max-width: 18em; min-height: 1.1em; }
   .msg.prompt { font-family: var(--display); font-weight: 800; font-size: clamp(40px, 8.5vh, 88px); color: var(--brass); line-height: 1; }
+  .msg-bn { font-size: clamp(20px, 4.2vh, 36px); font-weight: 700; color: var(--brass); line-height: 1.15;
+    margin-top: -4px; font-family: "Schibsted", "Nirmala UI", "Kalpurush", system-ui, sans-serif; }
   .sub { font-size: clamp(18px, 2.8vh, 24px); color: var(--on-ground-soft); min-height: 1.2em; }
   .steps { display: flex; gap: 8px; }
   .steps span { width: 40px; height: 8px; border-radius: 4px; background: var(--ground-line); }
@@ -259,6 +262,9 @@
   <span class="pill hidden" id="queue"></span>
   <span class="pill dev hidden" id="devpill">Test mode</span>
   <span class="spacer"></span>
+  <button class="ghost sound-btn" id="voiceBtn" aria-label="Toggle voice instructions" title="Toggle voice instructions">
+    <span id="voiceIcon">🔊</span>
+  </button>
   <button class="ghost hidden" id="menuBtn" aria-label="Kiosk menu">Menu</button>
 </header>
 
@@ -281,6 +287,7 @@
       <li><b>1</b>Card</li><li><b>2</b>Face</li><li><b>3</b>Moves</li>
     </ol>
     <div class="msg" id="msg">Starting…</div>
+    <div class="msg-bn hidden" id="msgBn"></div>
     <div class="sub" id="sub"></div>
     <div class="steps hidden" id="steps"></div>
     <div class="actions">
@@ -373,6 +380,18 @@
       <div class="status" id="camStatusSettings"></div>
     </div>
     <div class="box">
+      <h2>Voice instructions</h2>
+      <p>Plays spoken instructions and confirmation in Bangla (offline voice).</p>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <label style="display:inline-flex;align-items:center;gap:10px;font-weight:600;font-size:17px;cursor:pointer">
+          <input type="checkbox" id="voiceToggleSettings" style="width:20px;height:20px;accent-color:var(--ground)">
+          Voice instructions (Bangla)
+        </label>
+        <button class="ghost" id="testVoiceBtn" style="min-height:42px;padding:0 16px;font-size:15px">Play test voice</button>
+      </div>
+      <div class="status" id="voiceStatusSettings"></div>
+    </div>
+    <div class="box">
       <h2>Pair with a different space</h2>
       <p>Disconnects this kiosk from its server so you can set it up again.</p>
       <div><button class="danger" id="repair">Disconnect this kiosk</button></div>
@@ -436,6 +455,79 @@ let ws, view = {}, lastUrl, dev = false, manageMode = "", canQuit = false;
 let menuAction = null;  // "settings" | "exit" while waiting for the admin's Settings QR
 let camUrls = [];  // preview pictures in the camera chooser, released when it reloads
 
+// ---------- Bangla Voice Instructions (Pre-generated on-device TTS audio) ----------
+const BANGLA_PROMPTS = {
+  blink: "চোখের পলক ফেলুন",
+  smile: "একটু হাসুন",
+  turn_left: "ধীরে ধীরে মাথা বাঁ দিকে ঘোরান",
+  turn_right: "ধীরে ধীরে মাথা ডান দিকে ঘোরান",
+  look_up: "উপরের দিকে তাকান",
+  look_straight: "ক্যামেরার দিকে সোজা তাকান",
+  hold_still: "অনুগ্রহ করে স্থির থাকুন",
+  come_closer: "ক্যামেরার একটু কাছে আসুন",
+  one_person: "ক্যামেরার সামনে শুধু একজন থাকুন",
+  too_dark: "পর্যাপ্ত আলোতে আসুন",
+  scan_qr: "আপনার কিউআর কোডটি ক্যামেরার সামনে ধরুন",
+  checked_in: "চেক ইন সম্পন্ন হয়েছে, ধন্যবাদ",
+  checked_out: "চেক আউট সম্পন্ন হয়েছে, ধন্যবাদ",
+  marked_present: "উপস্থিতি নিশ্চিত হয়েছে, ধন্যবাদ",
+  already_recorded: "আপনার উপস্থিতি ইতিমধ্যে রেকর্ড করা হয়েছে",
+  failed: "যাচাইকরণ সম্পন্ন হয়নি, অনুগ্রহ করে আবার চেষ্টা করুন",
+};
+
+let voiceEnabled = localStorage.getItem("fexor_voice") !== "false";
+let currentAudio = null;
+let lastVoiceCue = null;
+
+function updateVoiceUI() {
+  const icon = $("voiceIcon");
+  if (icon) icon.textContent = voiceEnabled ? "🔊" : "🔇";
+  const btn = $("voiceBtn");
+  if (btn) btn.setAttribute("aria-label", voiceEnabled ? "Mute voice instructions" : "Enable voice instructions");
+  const check = $("voiceToggleSettings");
+  if (check) check.checked = voiceEnabled;
+}
+
+function setVoiceEnabled(enabled) {
+  voiceEnabled = !!enabled;
+  localStorage.setItem("fexor_voice", voiceEnabled ? "true" : "false");
+  updateVoiceUI();
+  if (!voiceEnabled) stopVoice();
+}
+
+function stopVoice() {
+  if (currentAudio) {
+    try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (_) {}
+    currentAudio = null;
+  }
+}
+
+function playVoiceCue(cue) {
+  if (!voiceEnabled || !cue) return;
+  lastVoiceCue = cue;
+  stopVoice();
+  try {
+    const audio = new Audio(`/static/audio/${cue}.mp3`);
+    currentAudio = audio;
+    audio.play().catch((err) => {
+      console.debug("Voice audio deferred/blocked:", err);
+    });
+  } catch (e) {
+    console.debug("Audio play error:", e);
+  }
+}
+
+function unlockAudio() {
+  document.removeEventListener("pointerdown", unlockAudio);
+  document.removeEventListener("keydown", unlockAudio);
+  try {
+    const dummy = new Audio();
+    dummy.play().catch(() => {});
+  } catch (_) {}
+}
+document.addEventListener("pointerdown", unlockAudio);
+document.addEventListener("keydown", unlockAudio);
+
 function tick() {
   // The space's time, like the times on the result card.
   const opts = (o) => { try { return {...o, timeZone: view.tz || undefined}; } catch { return o; } };
@@ -458,6 +550,17 @@ $("closeSettings").onclick = () => send("close_settings");
 $("backSettings").onclick = () => send("close_settings");
 $("dismiss").onclick = () => send("dismiss");
 $("quitSetupTop").onclick = () => quitApp();
+$("voiceBtn").onclick = () => setVoiceEnabled(!voiceEnabled);
+$("voiceToggleSettings").onchange = (e) => setVoiceEnabled(e.target.checked);
+$("testVoiceBtn").onclick = () => {
+  playVoiceCue("blink");
+  const st = $("voiceStatusSettings");
+  if (st) {
+    st.className = "status done";
+    st.textContent = "Playing: 'চোখের পলক ফেলুন'…";
+    setTimeout(() => { st.textContent = ""; }, 3000);
+  }
+};
 
 // Desktop app: back to the list of saved sessions. The page reloads once the list is up.
 async function switchSession() {
@@ -699,6 +802,8 @@ function renderTrack(v) {
 
 function render(v) {
   const prev = view.state;
+  const prevAction = view.action;
+  const prevMsg = view.message;
   view = v;
   // Menu: a scanned Settings QR finishes the chosen action; a person starting a check closes it.
   if (menuAction && v.state === "settings" && prev !== "settings") {
@@ -717,7 +822,61 @@ function render(v) {
   const stage = $("stage");
   stage.className = "stage " + (v.state === "face" ? "face" : v.state === "scan_qr" ? "qr" : "")
     + (v.camera_ok === false ? " nocamera" : "");
-  if (renderManage(v)) { $("result").classList.add("hidden"); drawBox(null); return; }
+  if (renderManage(v)) { stopVoice(); lastVoiceCue = null; $("result").classList.add("hidden"); drawBox(null); return; }
+
+  // Voice prompts & Bengali subtitle
+  let cue = v.cue || null;
+  if (!cue) {
+    if (v.state === "scan_qr" && prev !== "scan_qr") {
+      cue = "scan_qr";
+    } else if (v.state === "face") {
+      if (v.action) {
+        cue = v.action;
+      } else if (v.message === "Look straight at the camera" && prev !== "face") {
+        cue = "look_straight";
+      } else if (v.message === "Come a little closer") {
+        cue = "come_closer";
+      } else if (v.message === "Only one person in front of the camera please") {
+        cue = "one_person";
+      } else if (v.message === "Move to where there is more light") {
+        cue = "too_dark";
+      } else if (v.message && (v.message.includes("hold still") || v.message.includes("Hold still"))) {
+        cue = "hold_still";
+      }
+    } else if (v.state === "result" && prev !== "result") {
+      if (v.ok) {
+        if (v.message === "Checked in") cue = "checked_in";
+        else if (v.message === "Checked out") cue = "checked_out";
+        else if (v.message === "Marked present") cue = "marked_present";
+        else if (v.message === "Already recorded") cue = "already_recorded";
+        else cue = "checked_in";
+      } else {
+        cue = "failed";
+      }
+    }
+  }
+
+  if (v.state === "idle" || v.state === "settings" || v.state === "setup") {
+    stopVoice();
+    lastVoiceCue = null;
+  } else if (cue) {
+    const shouldPlay = (cue !== lastVoiceCue) || (v.state === "face" && v.action && v.action !== prevAction);
+    if (shouldPlay) {
+      playVoiceCue(cue);
+    }
+  }
+
+  const bnText = BANGLA_PROMPTS[cue] || "";
+  const msgBn = $("msgBn");
+  if (msgBn) {
+    if (bnText && (v.state === "face" || v.state === "scan_qr")) {
+      msgBn.textContent = bnText;
+      msgBn.classList.remove("hidden");
+    } else {
+      msgBn.textContent = "";
+      msgBn.classList.add("hidden");
+    }
+  }
 
   const busy = v.state === "scan_qr" || v.state === "face";
   document.body.classList.toggle("busy", busy);
@@ -803,6 +962,7 @@ $("qrfile").onchange = async (e) => {
 };
 
 (async function boot() {
+  updateVoiceUI();
   try {
     const s = await (await fetch("/api/status")).json();
     dev = !!s.dev;

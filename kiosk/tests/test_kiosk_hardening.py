@@ -318,6 +318,22 @@ def test_kiosk_screens_load_their_bundled_fonts(tmp_path):
             assert r.status_code == 200 and r.content[:4] == b"wOF2", f
 
 
+def test_kiosk_serves_bundled_bangla_voice_audio(tmp_path):
+    """Voice instructions in Bangla are pre-generated on-device TTS audio files and served locally."""
+    app = create_app(paired_store(tmp_path), _NoCamera(), pipeline=FakePipe())
+    c = TestClient(app)
+    expected_cues = [
+        "blink", "smile", "turn_left", "turn_right", "look_up",
+        "look_straight", "hold_still", "come_closer", "one_person",
+        "too_dark", "scan_qr", "checked_in", "checked_out",
+        "marked_present", "already_recorded", "failed"
+    ]
+    for cue in expected_cues:
+        r = c.get(f"/static/audio/{cue}.mp3")
+        assert r.status_code == 200, f"Missing audio for {cue}"
+        assert len(r.content) > 1000, f"Audio for {cue} too small"
+
+
 # ---------- kiosk PIN ----------
 def _pinned_client(tmp_path, pin="482913"):
     from fexor_core.pin import hash_pin

@@ -146,6 +146,7 @@ def _find_chromium() -> str | None:
 def chromium_args(browser: str, data: Path, windowed: bool) -> list[str]:
     args = [browser, f"--app={URL}", "--noerrdialogs", "--disable-infobars", "--no-first-run",
             "--check-for-update-interval=31536000", f"--user-data-dir={data / 'browser'}",
+            "--autoplay-policy=no-user-gesture-required",
             # A kiosk has no keyboard for the keyring prompt, and swipes/pinches must not
             # navigate away or zoom the screen. No "restore pages?" bubble after a power cut.
             "--password-store=basic", "--disable-pinch", "--overscroll-history-navigation=0",
